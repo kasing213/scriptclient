@@ -8,8 +8,67 @@ const { OpenAI } = require('openai');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
+const express = require('express');
 process.on('unhandledRejection', (r)=>{console.error('UNHANDLED', r?.message, r?.stack)});
 process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.stack)});
+
+// ---- Express Health Server for Railway/Docker ----
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  const health = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    bot: bot ? 'connected' : 'initializing',
+    mongo: collection ? 'connected' : 'initializing'
+  };
+  res.status(200).json(health);
+});
+
+// Status endpoint for monitoring
+app.get('/status', async (req, res) => {
+  try {
+    const stats = {
+      bot: {
+        status: bot ? 'running' : 'initializing',
+        strategy: connectionStrategies[currentStrategy]?.name || 'unknown'
+      },
+      database: {
+        customerDB: collection ? 'connected' : 'disconnected',
+        invoiceDB: excelReadingsCollection ? 'connected' : 'disconnected'
+      },
+      queues: {
+        messageQueue: messageQueue.length,
+        processing: processing
+      },
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString()
+    };
+    res.status(200).json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Payment Verification Bot',
+    version: '1.0.0',
+    status: 'running'
+  });
+});
+
+// Start Express server
+app.listen(PORT, () => {
+  console.log(`🌐 Health server running on port ${PORT}`);
+  console.log(`✅ Health check: http://localhost:${PORT}/health`);
+  console.log(`📊 Status endpoint: http://localhost:${PORT}/status`);
+});
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
 // create fs-safe.js from our previous message or inline a minimal fallback.
