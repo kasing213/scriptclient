@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "axios": "^1.10.0",
+    "body-parser": "^2.2.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "mongodb": "^6.17.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^5.8.2",
+    "uuid": "^11.1.0"
+  },
+  "scripts": {
+    "start": "node src/botfetch.js",
+    "scheduler": "node src/payment-scheduler.js",
+    "verify": "node src/cross-verify-payment.js"
+  }
+}
