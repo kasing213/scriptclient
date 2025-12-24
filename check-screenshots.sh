@@ -22,6 +22,31 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
+# JSON parsing helper (uses Python, fallback to grep/sed)
+parse_count() {
+    local json="$1"
+    if command -v python3 &> /dev/null; then
+        echo "$json" | python3 -c "import sys, json; print(json.load(sys.stdin)['count'])" 2>/dev/null || echo "0"
+    elif command -v python &> /dev/null; then
+        echo "$json" | python -c "import sys, json; print(json.load(sys.stdin)['count'])" 2>/dev/null || echo "0"
+    else
+        # Fallback to grep/sed
+        echo "$json" | grep -o '"count":[0-9]*' | cut -d: -f2 || echo "0"
+    fi
+}
+
+parse_files() {
+    local json="$1"
+    if command -v python3 &> /dev/null; then
+        echo "$json" | python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join(data.get('files', [])))" 2>/dev/null
+    elif command -v python &> /dev/null; then
+        echo "$json" | python -c "import sys, json; data=json.load(sys.stdin); print('\n'.join(data.get('files', [])))" 2>/dev/null
+    else
+        # Fallback to grep
+        echo "$json" | grep -o '"[^"]*\.jpg"' | tr -d '"'
+    fi
+}
+
 # Function to get screenshot count
 get_screenshot_count() {
     local status=$1
@@ -35,31 +60,31 @@ show_summary() {
 
     # Verified
     verified=$(get_screenshot_count "verified")
-    verified_count=$(echo "$verified" | jq -r '.count')
+    verified_count=$(parse_count "$verified")
     echo -e "${GREEN}✅ Verified:  $verified_count screenshots${NC}"
-    if [ "$verified_count" -gt 0 ]; then
-        echo "$verified" | jq -r '.files[]' | while read file; do
-            echo -e "   ${GRAY}- $file${NC}"
+    if [ "$verified_count" -gt 0 ] 2>/dev/null; then
+        parse_files "$verified" | while read file; do
+            [ -n "$file" ] && echo -e "   ${GRAY}- $file${NC}"
         done
     fi
 
     # Rejected
     rejected=$(get_screenshot_count "rejected")
-    rejected_count=$(echo "$rejected" | jq -r '.count')
+    rejected_count=$(parse_count "$rejected")
     echo -e "\n${RED}❌ Rejected:  $rejected_count screenshots${NC}"
-    if [ "$rejected_count" -gt 0 ]; then
-        echo "$rejected" | jq -r '.files[]' | while read file; do
-            echo -e "   ${GRAY}- $file${NC}"
+    if [ "$rejected_count" -gt 0 ] 2>/dev/null; then
+        parse_files "$rejected" | while read file; do
+            [ -n "$file" ] && echo -e "   ${GRAY}- $file${NC}"
         done
     fi
 
     # Pending
     pending=$(get_screenshot_count "pending")
-    pending_count=$(echo "$pending" | jq -r '.count')
+    pending_count=$(parse_count "$pending")
     echo -e "\n${YELLOW}⏳ Pending:   $pending_count screenshots${NC}"
-    if [ "$pending_count" -gt 0 ]; then
-        echo "$pending" | jq -r '.files[]' | while read file; do
-            echo -e "   ${GRAY}- $file${NC}"
+    if [ "$pending_count" -gt 0 ] 2>/dev/null; then
+        parse_files "$pending" | while read file; do
+            [ -n "$file" ] && echo -e "   ${GRAY}- $file${NC}"
         done
     fi
 
@@ -74,9 +99,9 @@ download_screenshots() {
     echo -e "\n${CYAN}📥 Downloading $status screenshots...${NC}"
 
     response=$(get_screenshot_count "$status")
-    count=$(echo "$response" | jq -r '.count')
+    count=$(parse_count "$response")
 
-    if [ "$count" -eq 0 ]; then
+    if [ "$count" -eq 0 ] 2>/dev/null; then
         echo -e "${YELLOW}No files to download in $status folder${NC}"
         return
     fi
@@ -85,11 +110,13 @@ download_screenshots() {
     mkdir -p "$status"
 
     # Download each file
-    echo "$response" | jq -r '.files[]' | while read file; do
-        echo -e "  ${GRAY}Downloading $file...${NC}"
-        curl -s -H "x-download-token: $TOKEN" \
-            "$BASE_URL/$status/$file" \
-            -o "$status/$file"
+    parse_files "$response" | while read file; do
+        if [ -n "$file" ]; then
+            echo -e "  ${GRAY}Downloading $file...${NC}"
+            curl -s -H "x-download-token: $TOKEN" \
+                "$BASE_URL/$status/$file" \
+                -o "$status/$file"
+        fi
     done
 
     echo -e "${GREEN}✅ Downloaded $count files to ./$status/${NC}"
@@ -99,26 +126,26 @@ download_screenshots() {
 case "$ACTION" in
     verified)
         response=$(get_screenshot_count "verified")
-        count=$(echo "$response" | jq -r '.count')
+        count=$(parse_count "$response")
         echo -e "\n${GREEN}✅ Verified: $count files${NC}"
-        echo "$response" | jq -r '.files[]' | while read file; do
-            echo "   - $file"
+        parse_files "$response" | while read file; do
+            [ -n "$file" ] && echo "   - $file"
         done
         ;;
     rejected)
         response=$(get_screenshot_count "rejected")
-        count=$(echo "$response" | jq -r '.count')
+        count=$(parse_count "$response")
         echo -e "\n${RED}❌ Rejected: $count files${NC}"
-        echo "$response" | jq -r '.files[]' | while read file; do
-            echo "   - $file"
+        parse_files "$response" | while read file; do
+            [ -n "$file" ] && echo "   - $file"
         done
         ;;
     pending)
         response=$(get_screenshot_count "pending")
-        count=$(echo "$response" | jq -r '.count')
+        count=$(parse_count "$response")
         echo -e "\n${YELLOW}⏳ Pending: $count files${NC}"
-        echo "$response" | jq -r '.files[]' | while read file; do
-            echo "   - $file"
+        parse_files "$response" | while read file; do
+            [ -n "$file" ] && echo "   - $file"
         done
         ;;
     download)
