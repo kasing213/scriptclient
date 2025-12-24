@@ -69,10 +69,38 @@ PAYMENT_TOLERANCE_PERCENT=5
 EXPECTED_RECIPIENT_ACCOUNT=000 054 702
 PORT=3000
 SCREENSHOT_DIR=./screenshots
+SCREENSHOT_DOWNLOAD_TOKEN=change-me
 
 # Optional: Separate Invoice Database
 MONGO_URL_INVOICE=mongodb+srv://...
 DB_NAME_INVOICE=invoiceDB
+```
+
+### Downloading screenshots (Railway)
+Set `SCREENSHOT_DOWNLOAD_TOKEN` in Railway, then download a file:
+
+```bash
+curl -H "x-download-token: YOUR_TOKEN" \
+  "https://YOUR-RAILWAY-DOMAIN/screenshots/verified/FILE.jpg" \
+  -o FILE.jpg
+```
+
+List files in a status folder:
+
+```bash
+curl -H "x-download-token: YOUR_TOKEN" \
+  "https://YOUR-RAILWAY-DOMAIN/screenshots/verified"
+```
+
+Download all files in a status folder (PowerShell):
+
+```powershell
+$token = "YOUR_TOKEN"
+$base = "https://YOUR-RAILWAY-DOMAIN/screenshots/verified"
+$files = (Invoke-RestMethod -Headers @{ "x-download-token" = $token } -Uri $base).files
+foreach ($f in $files) {
+  Invoke-WebRequest -Headers @{ "x-download-token" = $token } -Uri "$base/$f" -OutFile $f
+}
 ```
 
 ### Step 4: MongoDB Setup

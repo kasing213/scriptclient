@@ -15,6 +15,16 @@ process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.s
 // ---- Express Health Server for Railway/Docker ----
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SCREENSHOT_DOWNLOAD_TOKEN = process.env.SCREENSHOT_DOWNLOAD_TOKEN || null;
+const ALLOWED_SCREENSHOT_STATUSES = new Set(['verified', 'rejected', 'pending']);
+
+function getDownloadToken(req) {
+  return req.get('x-download-token') || req.query.token;
+}
+
+function isDownloadAuthorized(req) {
+  return SCREENSHOT_DOWNLOAD_TOKEN && getDownloadToken(req) === SCREENSHOT_DOWNLOAD_TOKEN;
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -61,6 +71,75 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     status: 'running'
   });
+});
+
+// Screenshot listing endpoint (protected by SCREENSHOT_DOWNLOAD_TOKEN)
+app.get('/screenshots/:status', async (req, res) => {
+  if (!SCREENSHOT_DOWNLOAD_TOKEN) {
+    return res.status(503).json({ error: 'download_disabled' });
+  }
+
+  if (!isDownloadAuthorized(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const status = req.params.status;
+  if (!ALLOWED_SCREENSHOT_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'invalid_status' });
+  }
+
+  const statusDir = path.resolve(SCREENSHOT_DIR, status);
+  let entries = [];
+  try {
+    entries = await fs.promises.readdir(statusDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.json({ status, count: 0, files: [] });
+    }
+    return res.status(500).json({ error: 'list_failed' });
+  }
+
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+
+  return res.json({ status, count: files.length, files });
+});
+
+// Screenshot download endpoint (protected by SCREENSHOT_DOWNLOAD_TOKEN)
+app.get('/screenshots/:status/:name', async (req, res) => {
+  if (!SCREENSHOT_DOWNLOAD_TOKEN) {
+    return res.status(503).json({ error: 'download_disabled' });
+  }
+
+  if (!isDownloadAuthorized(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  const status = req.params.status;
+  if (!ALLOWED_SCREENSHOT_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'invalid_status' });
+  }
+
+  const name = req.params.name;
+  if (name !== path.basename(name)) {
+    return res.status(400).json({ error: 'invalid_name' });
+  }
+
+  const statusDir = path.resolve(SCREENSHOT_DIR, status);
+  const requestedPath = path.resolve(statusDir, name);
+  if (!requestedPath.startsWith(statusDir + path.sep)) {
+    return res.status(400).json({ error: 'invalid_path' });
+  }
+
+  try {
+    await fs.promises.access(requestedPath, fs.constants.R_OK);
+  } catch (error) {
+    return res.status(404).json({ error: 'not_found' });
+  }
+
+  return res.sendFile(requestedPath);
 });
 
 // Start Express server
