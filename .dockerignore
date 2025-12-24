@@ -56,3 +56,5 @@ logs
 # Scripts that aren't needed in production
 scripts
 start-bot.sh
+check-screenshots.ps1
+check-screenshots.sh
