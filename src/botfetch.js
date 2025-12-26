@@ -371,29 +371,17 @@ function formatCurrency(amount) {
   return Math.round(amount).toLocaleString('en-US');
 }
 
-// ==== Confidence Percent Mapper ====
-function getConfidencePercent(confidence) {
-  const map = {
-    'high': 95,
-    'medium': 70,
-    'low': 45
-  };
-  return map[confidence] || 50;
-}
-
 // ==== Enhanced Verification Message Builder ====
 function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVerified, verificationStatus) {
   const paidAmount = amountInKHR || 0;
   const expected = expectedAmount || 0;
   const difference = paidAmount - expected;
-  const confidencePercent = getConfidencePercent(paymentData.confidence);
 
   // Scenario 1: Verified full payment (within tolerance)
   if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
     return `✅ ការទូទាត់បានបញ្ជាក់ ✅\n` +
            `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
            `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
-           `✅ ភាពជឿជាក់: ${confidencePercent}%\n` +
            `សូមអរគុណ! 🙏`;
   }
 
@@ -420,7 +408,6 @@ function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVe
   if (paymentData.confidence === 'low' || paymentData.confidence === 'medium') {
     return `⏳ សូមរង់ចាំការពិនិត្យ\n` +
            `💰 ចំនួនដែលរកឃើញ: ${formatCurrency(paidAmount)} KHR\n` +
-           `⚠️ ភាពជឿជាក់: ${confidencePercent}%\n` +
            `សូមរង់ចាំការបញ្ជាក់`;
   }
 
