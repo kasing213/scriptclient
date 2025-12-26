@@ -365,6 +365,69 @@ function convertToKHR(amount, currency) {
   return amount;
 }
 
+// ==== Currency Formatting Helper ====
+function formatCurrency(amount) {
+  if (!amount) return '0';
+  return Math.round(amount).toLocaleString('en-US');
+}
+
+// ==== Confidence Percent Mapper ====
+function getConfidencePercent(confidence) {
+  const map = {
+    'high': 95,
+    'medium': 70,
+    'low': 45
+  };
+  return map[confidence] || 50;
+}
+
+// ==== Enhanced Verification Message Builder ====
+function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVerified, verificationStatus) {
+  const paidAmount = amountInKHR || 0;
+  const expected = expectedAmount || 0;
+  const difference = paidAmount - expected;
+  const confidencePercent = getConfidencePercent(paymentData.confidence);
+
+  // Scenario 1: Verified full payment (within tolerance)
+  if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
+    return `✅ ការទូទាត់បានបញ្ជាក់ ✅\n` +
+           `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
+           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
+           `✅ ភាពជឿជាក់: ${confidencePercent}%\n` +
+           `សូមអរគុណ! 🙏`;
+  }
+
+  // Scenario 2: Partial payment (paid less than expected)
+  if (expected > 0 && paidAmount < expected && difference < 0) {
+    const remaining = Math.abs(difference);
+    return `⚠️ ការទូទាត់មិនពេញលេញ\n` +
+           `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
+           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
+           `❌ នៅខ្វះ: ${formatCurrency(remaining)} KHR\n` +
+           `សូមបង់ប្រាក់នៅសល់`;
+  }
+
+  // Scenario 3: Overpayment (paid more than expected)
+  if (expected > 0 && difference > 0 && isVerified) {
+    return `✅ ការទូទាត់បានបញ្ជាក់ ✅\n` +
+           `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
+           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
+           `💵 លើស: ${formatCurrency(difference)} KHR\n` +
+           `សូមអរគុណ! 🙏`;
+  }
+
+  // Scenario 4: Low/Medium confidence - needs manual review
+  if (paymentData.confidence === 'low' || paymentData.confidence === 'medium') {
+    return `⏳ សូមរង់ចាំការពិនិត្យ\n` +
+           `💰 ចំនួនដែលរកឃើញ: ${formatCurrency(paidAmount)} KHR\n` +
+           `⚠️ ភាពជឿជាក់: ${confidencePercent}%\n` +
+           `សូមរង់ចាំការបញ្ជាក់`;
+  }
+
+  // Default fallback message
+  return `✅ បានទទួលការទូទាត់ ${formatCurrency(paidAmount)} KHR សូមអរគុណ`;
+}
+
 // ==== OpenAI Rate Limiter ====
 class OpenAIRateLimiter {
   constructor(maxRequestsPerMinute = 10) {
@@ -550,24 +613,29 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
     if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
       finalVerificationStatus = 'verified';
       paymentLabel = 'PAID';
-
-      // Simple paid confirmation in Khmer
-      const amountLabel = paymentData.amount || amountInKHR || 'N/A';
-      const currencyLabel = paymentData.currency || (paymentData.amount ? '' : 'KHR');
-      try {
-        await bot.sendMessage(
-          chatId,
-          `✅ បានទទួលការទូទាត់ ${amountLabel} ${currencyLabel} សូមអរគុណ`.trim()
-        );
-      } catch (notifyErr) {
-        console.error('❌ Failed to send paid notification:', notifyErr.message);
-      }
     } else if (!paymentData.isPaid || paymentData.confidence === 'low') {
       finalVerificationStatus = 'rejected';
       paymentLabel = 'UNPAID';
     } else if (paymentData.isPaid && !isVerified) {
       finalVerificationStatus = 'pending';
       paymentLabel = 'PENDING';
+    }
+
+    // Send enhanced verification message to user
+    if (paymentData.isPaid) {
+      const message = buildVerificationMessage(
+        paymentData,
+        expectedAmountKHR,
+        amountInKHR,
+        isVerified,
+        finalVerificationStatus
+      );
+
+      try {
+        await bot.sendMessage(chatId, message);
+      } catch (notifyErr) {
+        console.error('❌ Failed to send verification message:', notifyErr.message);
+      }
     }
 
     // Organize screenshot into appropriate folder
