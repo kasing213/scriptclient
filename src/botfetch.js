@@ -381,25 +381,22 @@ function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVe
   if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
     return `✅ ការទូទាត់បានបញ្ជាក់ ✅\n` +
            `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
-           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
+           `📋 ចំនួនត្រូវបង់: ${formatCurrency(expected)} KHR\n` +
            `សូមអរគុណ! 🙏`;
   }
 
   // Scenario 2: Partial payment (paid less than expected)
   if (expected > 0 && paidAmount < expected && difference < 0) {
-    const remaining = Math.abs(difference);
     return `⚠️ ការទូទាត់មិនពេញលេញ\n` +
            `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
-           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
-           `❌ នៅខ្វះ: ${formatCurrency(remaining)} KHR\n` +
-           `សូមបង់ប្រាក់នៅសល់`;
+           `📋 ចំនួនត្រូវបង់: ${formatCurrency(expected)} KHR`;
   }
 
   // Scenario 3: Overpayment (paid more than expected)
   if (expected > 0 && difference > 0 && isVerified) {
     return `✅ ការទូទាត់បានបញ្ជាក់ ✅\n` +
            `💰 បានទទួល: ${formatCurrency(paidAmount)} KHR\n` +
-           `📋 ចំនួនរំពឹង: ${formatCurrency(expected)} KHR\n` +
+           `📋 ចំនួនត្រូវបង់: ${formatCurrency(expected)} KHR\n` +
            `💵 លើស: ${formatCurrency(difference)} KHR\n` +
            `សូមអរគុណ! 🙏`;
   }
