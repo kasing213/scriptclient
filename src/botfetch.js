@@ -142,11 +142,81 @@ app.get('/screenshots/:status/:name', async (req, res) => {
   return res.sendFile(requestedPath);
 });
 
+// Customer payment status endpoint
+app.get('/customer/:chatId/status', async (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+    if (isNaN(chatId)) {
+      return res.status(400).json({ error: 'Invalid chatId' });
+    }
+
+    const customer = await getCustomerStatus(chatId);
+
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    res.json(customer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all customers with payment status summary
+app.get('/customers/summary', async (req, res) => {
+  try {
+    const status = req.query.status; // Optional filter by status
+
+    let customers;
+    if (status) {
+      customers = await getCustomersByStatus(status);
+    } else {
+      customers = await customersCollection.find({}).toArray();
+    }
+
+    // Calculate summary statistics
+    const summary = {
+      total: customers.length,
+      fullyPaid: customers.filter(c => c.paymentStatus === 'FULLY_PAID').length,
+      partialPaid: customers.filter(c => c.paymentStatus === 'PARTIAL_PAID').length,
+      notPaid: customers.filter(c => c.paymentStatus === 'NOT_PAID').length,
+      overpaid: customers.filter(c => c.paymentStatus === 'OVERPAID').length,
+      totalExpected: customers.reduce((sum, c) => sum + (c.totalExpected || 0), 0),
+      totalPaid: customers.reduce((sum, c) => sum + (c.totalPaid || 0), 0),
+      totalRemaining: customers.reduce((sum, c) => sum + (c.remainingBalance || 0), 0),
+      customers: customers
+    };
+
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get overdue customers (default 3 days)
+app.get('/customers/overdue', async (req, res) => {
+  try {
+    const daysOverdue = parseInt(req.query.days) || 3;
+    const customers = await getOverdueCustomers(daysOverdue);
+
+    res.json({
+      daysOverdue,
+      count: customers.length,
+      customers
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start Express server
 app.listen(PORT, () => {
   console.log(`🌐 Health server running on port ${PORT}`);
   console.log(`✅ Health check: http://localhost:${PORT}/health`);
   console.log(`📊 Status endpoint: http://localhost:${PORT}/status`);
+  console.log(`👥 Customer status: http://localhost:${PORT}/customer/:chatId/status`);
+  console.log(`📋 Customers summary: http://localhost:${PORT}/customers/summary`);
+  console.log(`⏰ Overdue customers: http://localhost:${PORT}/customers/overdue`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
@@ -369,6 +439,126 @@ function convertToKHR(amount, currency) {
 function formatCurrency(amount) {
   if (!amount) return '0';
   return Math.round(amount).toLocaleString('en-US');
+}
+
+// ==== Customer Payment Status Update ====
+async function updateCustomerPaymentStatus(chatId, paymentRecord) {
+  try {
+    // 1. Get expected amount from excelreadings
+    const bill = await excelReadingsCollection.findOne({ chatId });
+    const totalExpected = bill?.amount || 0;
+
+    // 2. Aggregate all VERIFIED payments for this customer
+    const verifiedPayments = await paymentsCollection.find({
+      chatId: chatId,
+      isVerified: true,
+      paymentLabel: 'PAID'
+    }).toArray();
+
+    const totalPaid = verifiedPayments.reduce((sum, p) => sum + (p.amountInKHR || 0), 0);
+    const paymentCount = verifiedPayments.length;
+
+    // 3. Aggregate PENDING payments
+    const pendingPayments = await paymentsCollection.find({
+      chatId: chatId,
+      paymentLabel: 'PENDING'
+    }).toArray();
+
+    const totalUnverified = pendingPayments.reduce((sum, p) => sum + (p.amountInKHR || 0), 0);
+
+    // 4. Calculate status
+    let paymentStatus;
+    let remainingBalance = totalExpected - totalPaid;
+    let excessAmount = 0;
+
+    if (totalPaid === 0) {
+      paymentStatus = 'NOT_PAID';
+    } else if (totalPaid >= totalExpected) {
+      paymentStatus = 'FULLY_PAID';
+      if (totalPaid > totalExpected) {
+        paymentStatus = 'OVERPAID';
+        excessAmount = totalPaid - totalExpected;
+      }
+    } else {
+      paymentStatus = 'PARTIAL_PAID';
+    }
+
+    // 5. Get payment dates
+    const paymentDates = verifiedPayments.map(p => p.uploadedAt).sort();
+    const firstPaymentDate = paymentDates[0] || null;
+    const lastPaymentDate = paymentDates[paymentDates.length - 1] || null;
+
+    // 6. Upsert to customers collection
+    await customersCollection.updateOne(
+      { chatId: chatId },
+      {
+        $set: {
+          chatId: chatId,
+          customerName: bill?.customer || paymentRecord.fullName,
+          username: paymentRecord.username,
+          totalExpected: totalExpected,
+          totalPaid: totalPaid,
+          totalUnverified: totalUnverified,
+          paymentCount: paymentCount,
+          paymentStatus: paymentStatus,
+          excessAmount: excessAmount,
+          remainingBalance: remainingBalance,
+          lastPaymentDate: lastPaymentDate,
+          firstPaymentDate: firstPaymentDate,
+          lastUpdated: new Date(),
+          paymentIds: verifiedPayments.map(p => p._id)
+        }
+      },
+      { upsert: true }
+    );
+
+    console.log(`📊 Customer status updated: ${paymentStatus} | Paid ${formatCurrency(totalPaid)}/${formatCurrency(totalExpected)} KHR`);
+
+    return {
+      paymentStatus,
+      totalPaid,
+      totalExpected,
+      remainingBalance,
+      excessAmount
+    };
+  } catch (error) {
+    console.error('❌ Failed to update customer status:', error.message);
+    return null;
+  }
+}
+
+// ==== Customer Status Query Helpers ====
+async function getCustomerStatus(chatId) {
+  try {
+    return await customersCollection.findOne({ chatId });
+  } catch (error) {
+    console.error('❌ Failed to get customer status:', error.message);
+    return null;
+  }
+}
+
+async function getCustomersByStatus(status) {
+  try {
+    return await customersCollection.find({ paymentStatus: status }).toArray();
+  } catch (error) {
+    console.error('❌ Failed to get customers by status:', error.message);
+    return [];
+  }
+}
+
+async function getOverdueCustomers(daysOverdue = 3) {
+  try {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysOverdue);
+
+    return await customersCollection.find({
+      paymentStatus: { $in: ['NOT_PAID', 'PARTIAL_PAID'] },
+      lastUpdated: { $lt: cutoffDate }
+    }).toArray();
+  } catch (error) {
+    console.error('❌ Failed to get overdue customers:', error.message);
+    return [];
+  }
 }
 
 // ==== Enhanced Verification Message Builder ====
@@ -665,6 +855,9 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
 
     try {
       await paymentsCollection.insertOne(paymentRecord);
+
+      // Update customer payment status in real-time
+      await updateCustomerPaymentStatus(chatId, paymentRecord);
 
       // Clean output with clear status label
       const statusIcon = paymentLabel === 'PAID' ? '✅' : paymentLabel === 'UNPAID' ? '❌' : '⏳';
