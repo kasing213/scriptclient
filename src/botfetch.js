@@ -209,6 +209,155 @@ app.get('/customers/overdue', async (req, res) => {
   }
 });
 
+// ==== Fraud Detection API Endpoints ====
+
+// Get all fraud alerts (filterable by status and type)
+app.get('/fraud/alerts', async (req, res) => {
+  try {
+    const reviewStatus = req.query.status; // PENDING, CONFIRMED_FRAUD, FALSE_POSITIVE, APPROVED
+    const fraudType = req.query.type;      // OLD_SCREENSHOT, INVALID_DATE, FUTURE_DATE, MISSING_DATE
+
+    let query = {};
+    if (reviewStatus) query.reviewStatus = reviewStatus;
+    if (fraudType) query.fraudType = fraudType;
+
+    const alerts = await fraudAlertsCollection
+      .find(query)
+      .sort({ detectedAt: -1 })
+      .toArray();
+
+    const summary = {
+      total: alerts.length,
+      pending: alerts.filter(a => a.reviewStatus === 'PENDING').length,
+      confirmedFraud: alerts.filter(a => a.reviewStatus === 'CONFIRMED_FRAUD').length,
+      falsePositives: alerts.filter(a => a.reviewStatus === 'FALSE_POSITIVE').length,
+      approved: alerts.filter(a => a.reviewStatus === 'APPROVED').length,
+      alerts: alerts
+    };
+
+    res.json(summary);
+  } catch (error) {
+    console.error('❌ Error fetching fraud alerts:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get fraud alert by ID
+app.get('/fraud/alert/:alertId', async (req, res) => {
+  try {
+    const alert = await fraudAlertsCollection.findOne({
+      alertId: req.params.alertId
+    });
+
+    if (!alert) {
+      return res.status(404).json({ error: 'Fraud alert not found' });
+    }
+
+    res.json(alert);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Review fraud alert (approve/reject)
+app.post('/fraud/alert/:alertId/review', async (req, res) => {
+  try {
+    const { alertId } = req.params;
+    const { reviewStatus, reviewedBy, reviewNotes } = req.body;
+
+    // Validate reviewStatus
+    const validStatuses = ['PENDING', 'CONFIRMED_FRAUD', 'FALSE_POSITIVE', 'APPROVED'];
+    if (!validStatuses.includes(reviewStatus)) {
+      return res.status(400).json({
+        error: `Invalid reviewStatus. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    const result = await fraudAlertsCollection.updateOne(
+      { alertId: alertId },
+      {
+        $set: {
+          reviewStatus: reviewStatus,
+          reviewedBy: reviewedBy || 'admin',
+          reviewedAt: new Date(),
+          reviewNotes: reviewNotes || '',
+          resolutionDate: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Fraud alert not found' });
+    }
+
+    // If approved as FALSE_POSITIVE, update the payment record
+    if (reviewStatus === 'FALSE_POSITIVE' || reviewStatus === 'APPROVED') {
+      const alert = await fraudAlertsCollection.findOne({ alertId });
+
+      if (alert.paymentId) {
+        await paymentsCollection.updateOne(
+          { _id: alert.paymentId },
+          {
+            $set: {
+              paymentLabel: 'PAID',
+              verificationStatus: 'verified',
+              isVerified: true,
+              verificationNotes: `${alert.verificationNotes} | Fraud alert resolved: ${reviewStatus}`
+            }
+          }
+        );
+
+        // Update customer status
+        const payment = await paymentsCollection.findOne({ _id: alert.paymentId });
+        if (payment) {
+          await updateCustomerPaymentStatus(payment.chatId, payment);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Fraud alert ${alertId} updated to ${reviewStatus}`,
+      alertId: alertId
+    });
+  } catch (error) {
+    console.error('❌ Error reviewing fraud alert:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get fraud detection statistics
+app.get('/fraud/stats', async (req, res) => {
+  try {
+    const totalAlerts = await fraudAlertsCollection.countDocuments({});
+    const pendingReview = await fraudAlertsCollection.countDocuments({ reviewStatus: 'PENDING' });
+
+    // Group by fraud type
+    const byType = await fraudAlertsCollection.aggregate([
+      { $group: { _id: '$fraudType', count: { $sum: 1 } } }
+    ]).toArray();
+
+    // Recent alerts (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const recentAlerts = await fraudAlertsCollection.countDocuments({
+      detectedAt: { $gte: sevenDaysAgo }
+    });
+
+    res.json({
+      totalAlerts,
+      pendingReview,
+      recentAlerts,
+      byType: byType.reduce((acc, item) => {
+        acc[item._id] = item.count;
+        return acc;
+      }, {})
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start Express server
 app.listen(PORT, () => {
   console.log(`🌐 Health server running on port ${PORT}`);
@@ -217,6 +366,8 @@ app.listen(PORT, () => {
   console.log(`👥 Customer status: http://localhost:${PORT}/customer/:chatId/status`);
   console.log(`📋 Customers summary: http://localhost:${PORT}/customers/summary`);
   console.log(`⏰ Overdue customers: http://localhost:${PORT}/customers/overdue`);
+  console.log(`🚨 Fraud alerts: http://localhost:${PORT}/fraud/alerts`);
+  console.log(`🔍 Fraud stats: http://localhost:${PORT}/fraud/stats`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
@@ -383,6 +534,7 @@ const invoiceClient = new MongoClient(MONGO_URL_INVOICE, {
 let collection;
 let paymentsCollection;
 let customersCollection;
+let fraudAlertsCollection;
 let excelReadingsCollection;
 
 async function startDB() {
@@ -392,9 +544,11 @@ async function startDB() {
     collection = db.collection('messages');
     paymentsCollection = db.collection('payments');
     customersCollection = db.collection('customers');
+    fraudAlertsCollection = db.collection('fraudAlerts');
     console.log('✅ MongoDB connected (customerDB)');
     console.log('✅ Payments collection ready');
     console.log('✅ Customers collection ready');
+    console.log('✅ FraudAlerts collection ready');
 
     // Connect to invoiceDB
     await invoiceClient.connect();
@@ -602,6 +756,143 @@ function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVe
   return `✅ បានទទួលការទូទាត់ ${formatCurrency(paidAmount)} KHR សូមអរគុណ`;
 }
 
+// ==== Fraud Detection Helper Functions ====
+
+/**
+ * Validates transaction date and checks for screenshot age fraud
+ * @param {string} transactionDateStr - Transaction date from OCR
+ * @param {Date} uploadedAt - When screenshot was uploaded
+ * @param {number} maxAgeDays - Maximum allowed age in days
+ * @returns {object} - { isValid, fraudType, ageDays, parsedDate, reason }
+ */
+function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7) {
+  const result = {
+    isValid: true,
+    fraudType: null,
+    ageDays: null,
+    parsedDate: null,
+    reason: null
+  };
+
+  // Check 1: Missing transaction date
+  if (!transactionDateStr || transactionDateStr === 'null' || transactionDateStr === 'undefined') {
+    result.isValid = false;
+    result.fraudType = 'MISSING_DATE';
+    result.reason = 'Transaction date not found in screenshot';
+    return result;
+  }
+
+  // Check 2: Parse transaction date
+  let transactionDate;
+  try {
+    transactionDate = new Date(transactionDateStr);
+
+    // Check if date is valid
+    if (isNaN(transactionDate.getTime())) {
+      result.isValid = false;
+      result.fraudType = 'INVALID_DATE';
+      result.reason = `Invalid date format: ${transactionDateStr}`;
+      return result;
+    }
+
+    result.parsedDate = transactionDate;
+  } catch (error) {
+    result.isValid = false;
+    result.fraudType = 'INVALID_DATE';
+    result.reason = `Failed to parse date: ${transactionDateStr}`;
+    return result;
+  }
+
+  // Check 3: Future date detection
+  if (transactionDate > uploadedAt) {
+    const futureDays = Math.ceil((transactionDate - uploadedAt) / (1000 * 60 * 60 * 24));
+    result.isValid = false;
+    result.fraudType = 'FUTURE_DATE';
+    result.ageDays = -futureDays; // Negative to indicate future
+    result.reason = `Transaction date is ${futureDays} days in the future`;
+    return result;
+  }
+
+  // Check 4: Old screenshot detection
+  const ageDays = (uploadedAt - transactionDate) / (1000 * 60 * 60 * 24);
+  result.ageDays = Math.floor(ageDays);
+
+  if (ageDays > maxAgeDays) {
+    result.isValid = false;
+    result.fraudType = 'OLD_SCREENSHOT';
+    result.reason = `Screenshot is ${Math.floor(ageDays)} days old (max allowed: ${maxAgeDays} days)`;
+    return result;
+  }
+
+  return result;
+}
+
+/**
+ * Creates fraud alert record in fraudAlerts collection
+ * @param {object} fraudData - Fraud detection data
+ * @returns {string|null} - Alert ID or null if failed
+ */
+async function logFraudAlert(fraudData) {
+  try {
+    const alertId = `FA-${new Date().toISOString().split('T')[0].replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
+
+    const fraudAlert = {
+      _id: uuidv4(),
+      alertId: alertId,
+
+      // Fraud details
+      fraudType: fraudData.fraudType,
+      detectedAt: new Date(),
+      severity: fraudData.severity || 'MEDIUM',
+
+      // Payment reference
+      paymentId: fraudData.paymentId || null,
+      chatId: fraudData.chatId,
+      userId: fraudData.userId,
+      username: fraudData.username,
+      fullName: fraudData.fullName,
+
+      // Evidence
+      transactionDate: fraudData.transactionDate,
+      uploadedAt: fraudData.uploadedAt,
+      screenshotAgeDays: fraudData.screenshotAgeDays,
+      maxAllowedAgeDays: fraudData.maxAllowedAgeDays || 7,
+
+      transactionId: fraudData.transactionId || null,
+      referenceNumber: fraudData.referenceNumber || null,
+      amount: fraudData.amount || null,
+      currency: fraudData.currency || null,
+      bankName: fraudData.bankName || null,
+
+      screenshotPath: fraudData.screenshotPath,
+
+      // Review status
+      reviewStatus: 'PENDING',
+      reviewedBy: null,
+      reviewedAt: null,
+      reviewNotes: null,
+
+      // Additional context
+      verificationNotes: fraudData.verificationNotes,
+      confidence: fraudData.confidence,
+      aiAnalysis: fraudData.aiAnalysis,
+
+      // Resolution
+      actionTaken: fraudData.actionTaken || 'HELD_FOR_REVIEW',
+      resolutionDate: null
+    };
+
+    await fraudAlertsCollection.insertOne(fraudAlert);
+
+    console.log(`🚨 FRAUD ALERT LOGGED: ${alertId} - ${fraudData.fraudType} | Chat ${fraudData.chatId}`);
+
+    return alertId;
+  } catch (error) {
+    console.error('❌ Failed to log fraud alert:', error.message);
+    return null;
+  }
+}
+
 // ==== OpenAI Rate Limiter ====
 class OpenAIRateLimiter {
   constructor(maxRequestsPerMinute = 10) {
@@ -793,6 +1084,63 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
     } else if (paymentData.isPaid && !isVerified) {
       finalVerificationStatus = 'pending';
       paymentLabel = 'PENDING';
+    }
+
+    // ==== FRAUD DETECTION: Old Screenshot Check ====
+    const MAX_SCREENSHOT_AGE_DAYS = parseInt(process.env.MAX_SCREENSHOT_AGE_DAYS) || 7;
+
+    const dateValidation = validateTransactionDate(
+      paymentData.transactionDate,
+      new Date(), // uploadedAt
+      MAX_SCREENSHOT_AGE_DAYS
+    );
+
+    if (!dateValidation.isValid) {
+      console.log(`🚨 FRAUD DETECTED: ${dateValidation.fraudType} | ${dateValidation.reason}`);
+
+      // Log to fraudAlerts collection
+      const alertId = await logFraudAlert({
+        fraudType: dateValidation.fraudType,
+        severity: dateValidation.fraudType === 'OLD_SCREENSHOT' ? 'HIGH' : 'MEDIUM',
+        chatId: chatId,
+        userId: userId,
+        username: username,
+        fullName: fullName,
+        transactionDate: paymentData.transactionDate,
+        uploadedAt: new Date(),
+        screenshotAgeDays: dateValidation.ageDays,
+        maxAllowedAgeDays: MAX_SCREENSHOT_AGE_DAYS,
+        transactionId: paymentData.transactionId,
+        referenceNumber: paymentData.referenceNumber,
+        amount: amountInKHR,
+        currency: paymentData.currency,
+        bankName: paymentData.bankName,
+        screenshotPath: imagePath, // Will be updated after organization
+        verificationNotes: verificationNotes,
+        confidence: paymentData.confidence,
+        aiAnalysis: aiResponse,
+        actionTaken: 'HELD_FOR_REVIEW'
+      });
+
+      // Override verification status
+      finalVerificationStatus = 'rejected';
+      paymentLabel = 'FRAUD_PENDING';
+
+      // Update verification notes
+      verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
+
+      // Send fraud notification to user (Khmer)
+      try {
+        const fraudMessage =
+          `⚠️ ការទូទាត់ត្រូវបានបដិសេធ\n` +
+          `💰 ចំនួនដែលរកឃើញ: ${formatCurrency(amountInKHR)} KHR\n` +
+          `❌ មូលហេតុ: រូបថតចាស់ពេក (${dateValidation.ageDays} ថ្ងៃ)\n` +
+          `⏳ សូមបង្ហាញរូបថតថ្មី`;
+
+        await bot.sendMessage(chatId, fraudMessage);
+      } catch (notifyErr) {
+        console.error('❌ Failed to send fraud notification:', notifyErr.message);
+      }
     }
 
     // Send enhanced verification message to user
