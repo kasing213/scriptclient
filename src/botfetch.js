@@ -408,6 +408,7 @@ const SCREENSHOT_DIR = preferLinuxHome(
 const SCREENSHOT_VERIFIED_DIR = path.join(SCREENSHOT_DIR, 'verified');
 const SCREENSHOT_REJECTED_DIR = path.join(SCREENSHOT_DIR, 'rejected');
 const SCREENSHOT_PENDING_DIR = path.join(SCREENSHOT_DIR, 'pending');
+const SCREENSHOT_FRAUD_DIR = path.join(SCREENSHOT_DIR, 'fraud');
 
 // ---- Debug environment variables
 console.log('🔍 Environment Check:');
@@ -932,6 +933,8 @@ async function organizeScreenshot(originalPath, verificationStatus) {
       targetDir = SCREENSHOT_VERIFIED_DIR;
     } else if (verificationStatus === 'rejected') {
       targetDir = SCREENSHOT_REJECTED_DIR;
+    } else if (verificationStatus === 'fraud') {
+      targetDir = SCREENSHOT_FRAUD_DIR;
     } else {
       targetDir = SCREENSHOT_PENDING_DIR;
     }
@@ -1123,28 +1126,15 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
       });
 
       // Override verification status
-      finalVerificationStatus = 'rejected';
+      finalVerificationStatus = 'fraud';
       paymentLabel = 'FRAUD_PENDING';
 
       // Update verification notes
       verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
-
-      // Send fraud notification to user (Khmer)
-      try {
-        const fraudMessage =
-          `⚠️ ការទូទាត់ត្រូវបានបដិសេធ\n` +
-          `💰 ចំនួនដែលរកឃើញ: ${formatCurrency(amountInKHR)} KHR\n` +
-          `❌ មូលហេតុ: រូបថតចាស់ពេក (${dateValidation.ageDays} ថ្ងៃ)\n` +
-          `⏳ សូមបង្ហាញរូបថតថ្មី`;
-
-        await bot.sendMessage(chatId, fraudMessage);
-      } catch (notifyErr) {
-        console.error('❌ Failed to send fraud notification:', notifyErr.message);
-      }
     }
 
-    // Send enhanced verification message to user
-    if (paymentData.isPaid) {
+    // Send enhanced verification message to user (only for PAID and PENDING, not FRAUD)
+    if (paymentData.isPaid && finalVerificationStatus !== 'fraud') {
       const message = buildVerificationMessage(
         paymentData,
         expectedAmountKHR,
