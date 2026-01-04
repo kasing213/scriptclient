@@ -408,7 +408,6 @@ const SCREENSHOT_DIR = preferLinuxHome(
 const SCREENSHOT_VERIFIED_DIR = path.join(SCREENSHOT_DIR, 'verified');
 const SCREENSHOT_REJECTED_DIR = path.join(SCREENSHOT_DIR, 'rejected');
 const SCREENSHOT_PENDING_DIR = path.join(SCREENSHOT_DIR, 'pending');
-const SCREENSHOT_FRAUD_DIR = path.join(SCREENSHOT_DIR, 'fraud');
 
 // ---- Debug environment variables
 console.log('🔍 Environment Check:');
@@ -933,8 +932,6 @@ async function organizeScreenshot(originalPath, verificationStatus) {
       targetDir = SCREENSHOT_VERIFIED_DIR;
     } else if (verificationStatus === 'rejected') {
       targetDir = SCREENSHOT_REJECTED_DIR;
-    } else if (verificationStatus === 'fraud') {
-      targetDir = SCREENSHOT_FRAUD_DIR;
     } else {
       targetDir = SCREENSHOT_PENDING_DIR;
     }
@@ -1090,51 +1087,60 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
     }
 
     // ==== FRAUD DETECTION: Old Screenshot Check ====
+    // Only check for OLD_SCREENSHOT fraud if date is successfully extracted
+    // Skip fraud check for MISSING_DATE or INVALID_DATE (Khmer dates cause GPT-4 to return null)
     const MAX_SCREENSHOT_AGE_DAYS = parseInt(process.env.MAX_SCREENSHOT_AGE_DAYS) || 7;
 
-    const dateValidation = validateTransactionDate(
-      paymentData.transactionDate,
-      new Date(), // uploadedAt
-      MAX_SCREENSHOT_AGE_DAYS
-    );
+    if (paymentData.transactionDate && paymentData.transactionDate !== 'null') {
+      const dateValidation = validateTransactionDate(
+        paymentData.transactionDate,
+        new Date(), // uploadedAt
+        MAX_SCREENSHOT_AGE_DAYS
+      );
 
-    if (!dateValidation.isValid) {
-      console.log(`🚨 FRAUD DETECTED: ${dateValidation.fraudType} | ${dateValidation.reason}`);
+      // Only flag fraud for OLD_SCREENSHOT (date is readable but too old)
+      // Skip MISSING_DATE, INVALID_DATE, FUTURE_DATE (likely Khmer date extraction issues)
+      if (!dateValidation.isValid && dateValidation.fraudType === 'OLD_SCREENSHOT') {
+        console.log(`🚨 FRAUD DETECTED: ${dateValidation.fraudType} | ${dateValidation.reason}`);
 
-      // Log to fraudAlerts collection
-      const alertId = await logFraudAlert({
-        fraudType: dateValidation.fraudType,
-        severity: dateValidation.fraudType === 'OLD_SCREENSHOT' ? 'HIGH' : 'MEDIUM',
-        chatId: chatId,
-        userId: userId,
-        username: username,
-        fullName: fullName,
-        transactionDate: paymentData.transactionDate,
-        uploadedAt: new Date(),
-        screenshotAgeDays: dateValidation.ageDays,
-        maxAllowedAgeDays: MAX_SCREENSHOT_AGE_DAYS,
-        transactionId: paymentData.transactionId,
-        referenceNumber: paymentData.referenceNumber,
-        amount: amountInKHR,
-        currency: paymentData.currency,
-        bankName: paymentData.bankName,
-        screenshotPath: imagePath, // Will be updated after organization
-        verificationNotes: verificationNotes,
-        confidence: paymentData.confidence,
-        aiAnalysis: aiResponse,
-        actionTaken: 'HELD_FOR_REVIEW'
-      });
+        // Log to fraudAlerts collection
+        const alertId = await logFraudAlert({
+          fraudType: dateValidation.fraudType,
+          severity: 'HIGH',
+          chatId: chatId,
+          userId: userId,
+          username: username,
+          fullName: fullName,
+          transactionDate: paymentData.transactionDate,
+          uploadedAt: new Date(),
+          screenshotAgeDays: dateValidation.ageDays,
+          maxAllowedAgeDays: MAX_SCREENSHOT_AGE_DAYS,
+          transactionId: paymentData.transactionId,
+          referenceNumber: paymentData.referenceNumber,
+          amount: amountInKHR,
+          currency: paymentData.currency,
+          bankName: paymentData.bankName,
+          screenshotPath: imagePath, // Will be updated after organization
+          verificationNotes: verificationNotes,
+          confidence: paymentData.confidence,
+          aiAnalysis: aiResponse,
+          actionTaken: 'HELD_FOR_REVIEW'
+        });
 
-      // Override verification status
-      finalVerificationStatus = 'fraud';
-      paymentLabel = 'FRAUD_PENDING';
+        // Override verification status → PENDING for manual review
+        // Only override if originally verified (don't change pending/rejected)
+        if (finalVerificationStatus === 'verified') {
+          finalVerificationStatus = 'pending';
+          paymentLabel = 'PENDING';
+        }
 
-      // Update verification notes
-      verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
+        // Update verification notes
+        verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
+      }
     }
 
-    // Send enhanced verification message to user (only for PAID and PENDING, not FRAUD)
-    if (paymentData.isPaid && finalVerificationStatus !== 'fraud') {
+    // Send enhanced verification message to user (only for PAID and PENDING)
+    if (paymentData.isPaid) {
       const message = buildVerificationMessage(
         paymentData,
         expectedAmountKHR,
