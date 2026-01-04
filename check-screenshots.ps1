@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 # Payment Screenshot Manager
-# Usage: .\check-screenshots.ps1 [verified|rejected|pending|fraud|all|download]
+# Usage: .\check-screenshots.ps1 [verified|rejected|pending|all|download]
 
 param(
     [string]$Action = "all",
@@ -36,7 +36,6 @@ function Show-Summary {
     $verified = Get-ScreenshotCount "verified"
     $rejected = Get-ScreenshotCount "rejected"
     $pending = Get-ScreenshotCount "pending"
-    $fraud = Get-ScreenshotCount "fraud"
 
     if ($verified) {
         Write-Host "✅ Verified:  $($verified.count) screenshots" -ForegroundColor Green
@@ -59,14 +58,7 @@ function Show-Summary {
         }
     }
 
-    if ($fraud) {
-        Write-Host "`n🚨 Fraud:     $($fraud.count) screenshots" -ForegroundColor Magenta
-        if ($fraud.count -gt 0) {
-            $fraud.files | ForEach-Object { Write-Host "   - $_" -ForegroundColor Gray }
-        }
-    }
-
-    $total = ($verified.count + $rejected.count + $pending.count + $fraud.count)
+    $total = ($verified.count + $rejected.count + $pending.count)
     Write-Host "`n📦 Total: $total screenshots collected`n" -ForegroundColor Cyan
 }
 
@@ -118,30 +110,22 @@ switch ($Action.ToLower()) {
         Write-Host "`n⏳ Pending: $($response.count) files" -ForegroundColor Yellow
         $response.files | ForEach-Object { Write-Host "   - $_" }
     }
-    "fraud" {
-        $response = Get-ScreenshotCount "fraud"
-        Write-Host "`n🚨 Fraud: $($response.count) files" -ForegroundColor Magenta
-        $response.files | ForEach-Object { Write-Host "   - $_" }
-    }
     "download" {
         Write-Host "`nDownload which folder?" -ForegroundColor Cyan
         Write-Host "1. Verified" -ForegroundColor Green
         Write-Host "2. Rejected" -ForegroundColor Red
         Write-Host "3. Pending" -ForegroundColor Yellow
-        Write-Host "4. Fraud" -ForegroundColor Magenta
-        Write-Host "5. All" -ForegroundColor Cyan
-        $choice = Read-Host "Enter choice (1-5)"
+        Write-Host "4. All" -ForegroundColor Cyan
+        $choice = Read-Host "Enter choice (1-4)"
 
         switch ($choice) {
             "1" { Download-Screenshots "verified" }
             "2" { Download-Screenshots "rejected" }
             "3" { Download-Screenshots "pending" }
-            "4" { Download-Screenshots "fraud" }
-            "5" {
+            "4" {
                 Download-Screenshots "verified"
                 Download-Screenshots "rejected"
                 Download-Screenshots "pending"
-                Download-Screenshots "fraud"
             }
             default { Write-Host "Invalid choice" -ForegroundColor Red }
         }

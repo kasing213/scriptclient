@@ -45,10 +45,7 @@ export SCREENSHOT_DOWNLOAD_TOKEN="your-token-here"
 ⏳ Pending:   1 screenshot
    - review-001.jpg
 
-🚨 Fraud:     1 screenshot
-   - old-screenshot-001.jpg
-
-📦 Total: 9 screenshots collected
+📦 Total: 8 screenshots collected
 ```
 
 ### Check Specific Folder
@@ -58,13 +55,11 @@ export SCREENSHOT_DOWNLOAD_TOKEN="your-token-here"
 .\check-screenshots.ps1 verified
 .\check-screenshots.ps1 rejected
 .\check-screenshots.ps1 pending
-.\check-screenshots.ps1 fraud
 
 # Bash
 ./check-screenshots.sh verified
 ./check-screenshots.sh rejected
 ./check-screenshots.sh pending
-./check-screenshots.sh fraud
 ```
 
 ### Download Screenshots
@@ -83,16 +78,14 @@ Download which folder?
 1. Verified
 2. Rejected
 3. Pending
-4. Fraud
-5. All
-Enter choice (1-5):
+4. All
+Enter choice (1-4):
 ```
 
 **Files downloaded to:**
 - `./verified/` - Verified screenshots
 - `./rejected/` - Rejected screenshots
 - `./pending/` - Pending screenshots
-- `./fraud/` - Fraud-flagged screenshots
 
 ## 🔐 Security
 
@@ -134,7 +127,6 @@ Set-Alias check Check-Payments
 alias check='./check-screenshots.sh'
 alias check-verified='./check-screenshots.sh verified'
 alias check-pending='./check-screenshots.sh pending'
-alias check-fraud='./check-screenshots.sh fraud'
 ```
 
 ## 🎯 Common Workflows
@@ -156,13 +148,12 @@ alias check-fraud='./check-screenshots.sh fraud'
 ```powershell
 # Download everything
 .\check-screenshots.ps1 download
-# Choose 5 (All)
+# Choose 4 (All)
 
 # Move to archive folder
 Move-Item verified archive/2024-W52-verified
 Move-Item rejected archive/2024-W52-rejected
 Move-Item pending archive/2024-W52-pending
-Move-Item fraud archive/2024-W52-fraud
 ```
 
 ## 🆘 Troubleshooting
@@ -197,9 +188,4 @@ These scripts use:
 - `GET /screenshots/{status}` - List files
 - `GET /screenshots/{status}/{filename}` - Download file
 
-Where `{status}` is: `verified`, `rejected`, `pending`, or `fraud`
-
-**Fraud Folder:**
-- Contains screenshots flagged for potential fraud (old screenshots, date mismatches, etc.)
-- Requires admin review via `/fraud/alerts` API
-- Screenshots kept permanently for audit trail
+Where `{status}` is: `verified`, `rejected`, or `pending`

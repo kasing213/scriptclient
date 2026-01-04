@@ -1,6 +1,6 @@
 #!/bin/bash
 # Payment Screenshot Manager
-# Usage: ./check-screenshots.sh [verified|rejected|pending|fraud|all|download]
+# Usage: ./check-screenshots.sh [verified|rejected|pending|all|download]
 
 ACTION="${1:-all}"
 TOKEN="${SCREENSHOT_DOWNLOAD_TOKEN:-}"
@@ -11,7 +11,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
 GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
@@ -89,17 +88,7 @@ show_summary() {
         done
     fi
 
-    # Fraud
-    fraud=$(get_screenshot_count "fraud")
-    fraud_count=$(parse_count "$fraud")
-    echo -e "\n${MAGENTA}🚨 Fraud:     $fraud_count screenshots${NC}"
-    if [ "$fraud_count" -gt 0 ] 2>/dev/null; then
-        parse_files "$fraud" | while read file; do
-            [ -n "$file" ] && echo -e "   ${GRAY}- $file${NC}"
-        done
-    fi
-
-    total=$((verified_count + rejected_count + pending_count + fraud_count))
+    total=$((verified_count + rejected_count + pending_count))
     echo -e "\n${CYAN}📦 Total: $total screenshots collected${NC}\n"
 }
 
@@ -159,33 +148,22 @@ case "$ACTION" in
             [ -n "$file" ] && echo "   - $file"
         done
         ;;
-    fraud)
-        response=$(get_screenshot_count "fraud")
-        count=$(parse_count "$response")
-        echo -e "\n${MAGENTA}🚨 Fraud: $count files${NC}"
-        parse_files "$response" | while read file; do
-            [ -n "$file" ] && echo "   - $file"
-        done
-        ;;
     download)
         echo -e "\n${CYAN}Download which folder?${NC}"
         echo -e "${GREEN}1. Verified${NC}"
         echo -e "${RED}2. Rejected${NC}"
         echo -e "${YELLOW}3. Pending${NC}"
-        echo -e "${MAGENTA}4. Fraud${NC}"
-        echo -e "${CYAN}5. All${NC}"
-        read -p "Enter choice (1-5): " choice
+        echo -e "${CYAN}4. All${NC}"
+        read -p "Enter choice (1-4): " choice
 
         case $choice in
             1) download_screenshots "verified" ;;
             2) download_screenshots "rejected" ;;
             3) download_screenshots "pending" ;;
-            4) download_screenshots "fraud" ;;
-            5)
+            4)
                 download_screenshots "verified"
                 download_screenshots "rejected"
                 download_screenshots "pending"
-                download_screenshots "fraud"
                 ;;
             *) echo -e "${RED}Invalid choice${NC}" ;;
         esac
