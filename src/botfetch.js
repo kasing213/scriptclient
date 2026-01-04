@@ -986,23 +986,41 @@ async function analyzePaymentScreenshot(imagePath, chatId, userId, username, ful
             content: [
               {
                 type: 'text',
-                text: `Analyze this payment screenshot and extract the following information in JSON format:
+                text: `CRITICAL: You must verify this is a REAL BANK STATEMENT before analyzing.
+
+REJECT (set isPaid=false) if the image is:
+- NOT a bank statement or payment confirmation
+- A screenshot of a chat/message (Telegram, WhatsApp, etc.)
+- An invoice or bill (not a payment proof)
+- A random image, meme, or non-financial screenshot
+- A photo of something other than a bank transaction
+- Any image that doesn't show a COMPLETED bank transfer/payment
+
+ONLY accept (isPaid=true) if you can clearly see:
+- Bank name or mobile banking app interface
+- Transaction ID or reference number
+- Amount paid
+- Sender and recipient account information
+- Transaction date/time
+- "Success" or "Completed" status indicator
+
+Extract the following information in JSON format:
 {
-  "isPaid": true/false (whether this is a valid payment confirmation),
+  "isPaid": true/false (ONLY true if this is a REAL bank statement showing completed payment),
   "amount": number (the payment amount, use positive number),
   "currency": "string (USD, KHR, etc)",
   "transactionId": "string",
   "referenceNumber": "string",
   "fromAccount": "string (sender account number or name)",
   "toAccount": "string (recipient account number)",
-  "bankName": "string (e.g., ABA Bank)",
+  "bankName": "string (e.g., ABA Bank, Wing Bank, etc)",
   "transactionDate": "string (ISO format if possible)",
   "remark": "string (any notes or remarks)",
   "recipientName": "string (if visible)",
   "confidence": "high/medium/low (your confidence in the extraction)"
 }
 
-If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as true if you can clearly identify it as a valid payment/transfer confirmation.`
+Be STRICT: If in doubt, set isPaid=false and confidence=low.`
               },
               {
                 type: 'image_url',
