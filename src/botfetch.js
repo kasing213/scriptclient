@@ -971,11 +971,11 @@ async function analyzePaymentScreenshot(imagePath, chatId, userId, username, ful
     // Wait for rate limiter slot before calling OpenAI API
     await openaiRateLimiter.waitForSlot();
 
-    // Call GPT-4o Vision API with timeout
+    // Call GPT-4o-mini Vision API with timeout
     const openaiTimeout = 60000; // 60 second timeout
     const response = await Promise.race([
       openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini',
         messages: [
           {
             role: 'user',
