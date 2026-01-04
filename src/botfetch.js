@@ -550,6 +550,10 @@ async function startDB() {
     console.log('✅ Customers collection ready');
     console.log('✅ FraudAlerts collection ready');
 
+    // Create index on transactionId for fast duplicate detection (security)
+    await paymentsCollection.createIndex({ transactionId: 1 });
+    console.log('✅ Transaction ID index created (duplicate detection)');
+
     // Connect to invoiceDB
     await invoiceClient.connect();
     const invoiceDB = invoiceClient.db(DB_NAME_INVOICE);
@@ -1061,13 +1065,29 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
       verificationNotes = 'Cannot verify - missing expected amount or extracted amount';
     }
 
-    // Verify recipient account (only if EXPECTED_RECIPIENT_ACCOUNT is set)
+    // ==== SECURITY: Recipient Account Verification (REQUIRED) ====
     const expectedAccount = process.env.EXPECTED_RECIPIENT_ACCOUNT;
-    if (expectedAccount && expectedAccount.trim() !== '' && paymentData.toAccount) {
-      const accountMatch = paymentData.toAccount.replace(/\s/g, '') === expectedAccount.replace(/\s/g, '');
-      if (!accountMatch) {
+
+    // Warn if security setting is not configured
+    if (!expectedAccount || expectedAccount.trim() === '') {
+      console.warn('⚠️ SECURITY WARNING: EXPECTED_RECIPIENT_ACCOUNT not set! Cannot verify recipient account.');
+    }
+
+    // Verify recipient account if configured
+    if (expectedAccount && expectedAccount.trim() !== '') {
+      if (!paymentData.toAccount || paymentData.toAccount.trim() === '') {
+        // GPT-4 couldn't extract toAccount from screenshot
         isVerified = false;
-        verificationNotes += ` | Account mismatch: Expected ${expectedAccount}, got ${paymentData.toAccount}`;
+        verificationNotes += ` | SECURITY: Recipient account not found in screenshot`;
+        console.log(`🚨 SECURITY: Missing toAccount | Chat ${chatId} | Expected: ${expectedAccount}`);
+      } else {
+        // Check if toAccount matches expected account
+        const accountMatch = paymentData.toAccount.replace(/\s/g, '') === expectedAccount.replace(/\s/g, '');
+        if (!accountMatch) {
+          isVerified = false;
+          verificationNotes += ` | SECURITY: Account mismatch - Expected ${expectedAccount}, got ${paymentData.toAccount}`;
+          console.log(`🚨 SECURITY: Wrong recipient account | Chat ${chatId} | Expected: ${expectedAccount} | Got: ${paymentData.toAccount}`);
+        }
       }
     }
 
@@ -1137,6 +1157,50 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
 
         // Update verification notes
         verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
+      }
+    }
+
+    // ==== SECURITY: Transaction ID Uniqueness Check (Prevent Duplicate Fraud) ====
+    // Check if transaction ID has already been used by another customer
+    if (paymentData.transactionId && paymentData.transactionId.trim() !== '') {
+      const existingPayment = await paymentsCollection.findOne({
+        transactionId: paymentData.transactionId,
+        paymentLabel: { $in: ['PAID', 'PENDING'] } // Only check verified/pending payments
+      });
+
+      if (existingPayment) {
+        // Duplicate transaction detected!
+        console.log(`🚨 DUPLICATE TRANSACTION DETECTED | Trx ID: ${paymentData.transactionId} | Chat ${chatId} | Original: ${existingPayment.chatId}`);
+
+        // Log to fraudAlerts collection
+        const alertId = await logFraudAlert({
+          fraudType: 'DUPLICATE_TRANSACTION',
+          severity: 'CRITICAL',
+          chatId: chatId,
+          userId: userId,
+          username: username,
+          fullName: fullName,
+          transactionDate: paymentData.transactionDate,
+          uploadedAt: new Date(),
+          screenshotAgeDays: null,
+          maxAllowedAgeDays: null,
+          transactionId: paymentData.transactionId,
+          referenceNumber: paymentData.referenceNumber,
+          amount: amountInKHR,
+          currency: paymentData.currency,
+          bankName: paymentData.bankName,
+          screenshotPath: imagePath,
+          verificationNotes: `DUPLICATE: Transaction ${paymentData.transactionId} already used by chatId ${existingPayment.chatId}`,
+          confidence: paymentData.confidence,
+          aiAnalysis: aiResponse,
+          actionTaken: 'REJECTED_DUPLICATE'
+        });
+
+        // Override to REJECTED
+        finalVerificationStatus = 'rejected';
+        paymentLabel = 'UNPAID';
+
+        verificationNotes += ` | FRAUD: Duplicate transaction ID (already used by another customer) | Alert: ${alertId}`;
       }
     }
 
