@@ -16,7 +16,7 @@ process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.s
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SCREENSHOT_DOWNLOAD_TOKEN = process.env.SCREENSHOT_DOWNLOAD_TOKEN || null;
-const ALLOWED_SCREENSHOT_STATUSES = new Set(['verified', 'rejected', 'pending']);
+const ALLOWED_SCREENSHOT_STATUSES = new Set(['verified', 'rejected', 'pending', 'fraud']);
 
 function getDownloadToken(req) {
   return req.get('x-download-token') || req.query.token;
