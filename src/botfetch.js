@@ -1075,7 +1075,8 @@ If this is NOT a payment screenshot, set isPaid to false. Only mark isPaid as tr
     let finalVerificationStatus = 'pending';
     let paymentLabel = 'PENDING';
 
-    if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
+    // Accept both high and medium confidence if amount matches
+    if (isVerified && paymentData.confidence !== 'low' && paymentData.isPaid) {
       finalVerificationStatus = 'verified';
       paymentLabel = 'PAID';
     } else if (!paymentData.isPaid || paymentData.confidence === 'low') {
