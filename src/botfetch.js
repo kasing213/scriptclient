@@ -897,11 +897,13 @@ async function logFraudAlert(fraudData) {
   }
 }
 
-// ==== OpenAI Rate Limiter ====
+// ==== OpenAI Rate Limiter (Enhanced) ====
 class OpenAIRateLimiter {
   constructor(maxRequestsPerMinute = 10) {
     this.maxRequests = maxRequestsPerMinute;
     this.requests = [];
+    this.queue = [];
+    this.processing = false;
   }
 
   async waitForSlot() {
@@ -914,17 +916,77 @@ class OpenAIRateLimiter {
     if (this.requests.length >= this.maxRequests) {
       // Wait until the oldest request is older than 1 minute
       const oldestRequest = this.requests[0];
-      const waitTime = oldestRequest + 60000 - now;
-      console.log(`⏳ Rate limit reached. Waiting ${Math.ceil(waitTime / 1000)}s...`);
+      const waitTime = oldestRequest + 60000 - now + 100; // Add 100ms buffer
+      console.log(`⏳ Rate limit reached (${this.requests.length}/${this.maxRequests}). Waiting ${Math.ceil(waitTime / 1000)}s...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       return this.waitForSlot(); // Retry after waiting
     }
 
     this.requests.push(now);
+    console.log(`📊 Rate limiter: ${this.requests.length}/${this.maxRequests} requests in last minute`);
+  }
+
+  getStatus() {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    this.requests = this.requests.filter(time => time > oneMinuteAgo);
+    return {
+      currentRequests: this.requests.length,
+      maxRequests: this.maxRequests,
+      available: this.maxRequests - this.requests.length
+    };
   }
 }
 
-const openaiRateLimiter = new OpenAIRateLimiter(10); // 10 requests per minute
+// Rate limiter configuration from environment
+const OCR_RATE_LIMIT = parseInt(process.env.OCR_RATE_LIMIT_PER_MINUTE) || 10;
+const openaiRateLimiter = new OpenAIRateLimiter(OCR_RATE_LIMIT);
+
+// ==== Retry Logic with Exponential Backoff ====
+async function retryWithBackoff(fn, options = {}) {
+  const {
+    maxRetries = parseInt(process.env.OCR_MAX_RETRIES) || 3,
+    initialDelay = 1000,
+    maxDelay = 30000,
+    backoffFactor = 2,
+    retryableErrors = ['ECONNRESET', 'ETIMEDOUT', 'rate_limit', '429', '500', '502', '503']
+  } = options;
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const errorMessage = error.message || error.toString();
+      const errorCode = error.code || error.status || '';
+
+      // Check if error is retryable
+      const isRetryable = retryableErrors.some(e =>
+        errorMessage.includes(e) || errorCode.toString().includes(e)
+      );
+
+      if (!isRetryable || attempt === maxRetries) {
+        console.error(`❌ OCR failed after ${attempt} attempt(s): ${errorMessage}`);
+        throw error;
+      }
+
+      // Calculate delay with exponential backoff + jitter
+      const delay = Math.min(
+        initialDelay * Math.pow(backoffFactor, attempt - 1) + Math.random() * 1000,
+        maxDelay
+      );
+
+      console.log(`⚠️ OCR attempt ${attempt}/${maxRetries} failed: ${errorMessage}`);
+      console.log(`🔄 Retrying in ${Math.ceil(delay / 1000)}s...`);
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
 
 // ==== Screenshot Organization Helper ====
 async function organizeScreenshot(originalPath, verificationStatus) {
@@ -972,21 +1034,25 @@ async function analyzePaymentScreenshot(imagePath, chatId, userId, username, ful
     const imageBuffer = await fs.promises.readFile(imagePath);
     const base64Image = imageBuffer.toString('base64');
 
-    // Wait for rate limiter slot before calling OpenAI API
-    await openaiRateLimiter.waitForSlot();
+    // Call GPT-4o-mini Vision API with retry logic and rate limiting
+    const openaiTimeout = parseInt(process.env.OCR_TIMEOUT_MS) || 60000;
 
-    // Call GPT-4o-mini Vision API with timeout
-    const openaiTimeout = 60000; // 60 second timeout
-    const response = await Promise.race([
-      openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `CRITICAL: You must verify this is a REAL BANK STATEMENT before analyzing.
+    const response = await retryWithBackoff(async () => {
+      // Wait for rate limiter slot before each attempt
+      await openaiRateLimiter.waitForSlot();
+
+      console.log(`🔍 Calling GPT-4o-mini Vision API for OCR...`);
+
+      return await Promise.race([
+        openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `CRITICAL: You must verify this is a REAL BANK STATEMENT before analyzing.
 
 REJECT (set isPaid=false) if the image is:
 - NOT a bank statement or payment confirmation
@@ -1021,22 +1087,25 @@ Extract the following information in JSON format:
 }
 
 Be STRICT: If in doubt, set isPaid=false and confidence=low.`
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:image/jpeg;base64,${base64Image}`
+                },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:image/jpeg;base64,${base64Image}`
+                  }
                 }
-              }
-            ]
-          }
-        ],
-        max_tokens: 1000
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('OpenAI API timeout')), openaiTimeout)
-      )
-    ]);
+              ]
+            }
+          ],
+          max_tokens: 1000
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('OpenAI API timeout')), openaiTimeout)
+        )
+      ]);
+    });
+
+    console.log(`✅ OCR completed successfully`);
 
     const aiResponse = response.choices[0].message.content;
 
