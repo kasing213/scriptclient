@@ -1207,59 +1207,71 @@ async function analyzePaymentScreenshot(imagePath, chatId, userId, username, ful
     const imageBuffer = await fs.promises.readFile(imagePath);
     const base64Image = imageBuffer.toString('base64');
 
-    // Call GPT-4o-mini Vision API with retry logic and rate limiting
+    // Call GPT-4o Vision API with retry logic and rate limiting (upgraded from 4o-mini for accuracy)
     const openaiTimeout = parseInt(process.env.OCR_TIMEOUT_MS) || 60000;
 
     const response = await retryWithBackoff(async () => {
       // Wait for rate limiter slot before each attempt
       await openaiRateLimiter.waitForSlot();
 
-      console.log(`🔍 Calling GPT-4o-mini Vision API for OCR...`);
+      console.log(`🔍 Calling GPT-4o Vision API for Bank Statement OCR...`);
 
       return await Promise.race([
         openai.chat.completions.create({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'user',
               content: [
                 {
                   type: 'text',
-                  text: `CRITICAL: You must verify this is a REAL BANK STATEMENT before analyzing.
+                  text: `You are a BANK STATEMENT VERIFICATION OCR system for Cambodian banks.
 
-REJECT (set isPaid=false) if the image is:
-- NOT a bank statement or payment confirmation
-- A screenshot of a chat/message (Telegram, WhatsApp, etc.)
-- An invoice or bill (not a payment proof)
-- A random image, meme, or non-financial screenshot
-- A photo of something other than a bank transaction
-- Any image that doesn't show a COMPLETED bank transfer/payment
+STEP 1: VERIFY THIS IS A REAL BANK STATEMENT
+First, determine if this image is a GENUINE bank payment/transfer confirmation from a banking app.
 
-ONLY accept (isPaid=true) if you can clearly see:
-- Bank name or mobile banking app interface
-- Transaction ID or reference number
-- Amount paid
-- Sender and recipient account information
-- Transaction date/time
-- "Success" or "Completed" status indicator
+IMMEDIATELY REJECT (set isPaid=false, confidence=low) if:
+- This is a chat screenshot (Telegram, WhatsApp, Messenger, LINE, etc.)
+- This is an invoice, bill, receipt, or QR code (NOT payment proof)
+- This is a random photo, meme, or non-banking image
+- This is text/numbers without a bank app interface
+- This appears edited, manipulated, or fake
+- You cannot clearly identify a banking app interface
 
-Extract the following information in JSON format:
+ONLY ACCEPT (isPaid=true) if you can clearly see ALL of:
+- Bank app interface (ABA Bank, Wing, ACLEDA, Canadia, Prince Bank, Sathapana)
+- "Success", "Completed", or checkmark indicating completed transfer
+- Transaction/Reference ID
+- Amount transferred
+- Sender and Recipient account information
+
+STEP 2: EXTRACT PAYMENT DATA (only if Step 1 passes)
+Extract ALL fields carefully. Pay special attention to:
+- toAccount: The recipient account number (CRITICAL for security)
+- amount: The transfer amount (use POSITIVE number, ignore minus sign)
+- transactionId: The Trx. ID or Transaction ID
+
+Return JSON format:
 {
-  "isPaid": true/false (ONLY true if this is a REAL bank statement showing completed payment),
-  "amount": number (the payment amount, use positive number),
-  "currency": "string (USD, KHR, etc)",
+  "isPaid": true/false,
+  "amount": number (POSITIVE, e.g., 28000 not -28000),
+  "currency": "KHR" or "USD",
   "transactionId": "string",
   "referenceNumber": "string",
-  "fromAccount": "string (sender account number or name)",
+  "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
-  "bankName": "string (e.g., ABA Bank, Wing Bank, etc)",
-  "transactionDate": "string (ISO format if possible)",
-  "remark": "string (any notes or remarks)",
-  "recipientName": "string (if visible)",
-  "confidence": "high/medium/low (your confidence in the extraction)"
+  "bankName": "string",
+  "transactionDate": "string (ISO format: YYYY-MM-DDTHH:mm:ss)",
+  "remark": "string",
+  "recipientName": "string",
+  "confidence": "high/medium/low"
 }
 
-Be STRICT: If in doubt, set isPaid=false and confidence=low.`
+RULES:
+1. If NOT a bank statement → isPaid=false, confidence=low, leave other fields null
+2. Amount MUST be positive (if shows -28,000 KHR, return 28000)
+3. toAccount is REQUIRED for security verification
+4. Be STRICT - when uncertain, return isPaid=false`
                 },
                 {
                   type: 'image_url',
@@ -1270,7 +1282,7 @@ Be STRICT: If in doubt, set isPaid=false and confidence=low.`
               ]
             }
           ],
-          max_tokens: 1000
+          max_tokens: 1500
         }),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error('OpenAI API timeout')), openaiTimeout)
