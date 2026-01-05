@@ -8,11 +8,17 @@
     "mongodb": "^6.17.0",
     "node-telegram-bot-api": "^0.66.0",
     "openai": "^5.8.2",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "xlsx": "^0.18.5"
   },
   "scripts": {
     "start": "node src/botfetch.js",
     "scheduler": "node src/payment-scheduler.js",
-    "verify": "node src/cross-verify-payment.js"
+    "verify": "node src/cross-verify-payment.js",
+    "export": "node src/export-data.js",
+    "export:payments": "node src/export-data.js payments",
+    "export:customers": "node src/export-data.js customers",
+    "export:fraud": "node src/export-data.js fraudAlerts",
+    "export:invoices": "node src/export-data.js excelreadings"
   }
 }

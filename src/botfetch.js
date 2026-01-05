@@ -8,6 +8,7 @@ const { OpenAI } = require('openai');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
+const XLSX = require('xlsx');
 const express = require('express');
 process.on('unhandledRejection', (r)=>{console.error('UNHANDLED', r?.message, r?.stack)});
 process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.stack)});
@@ -358,6 +359,177 @@ app.get('/fraud/stats', async (req, res) => {
   }
 });
 
+// ==== Export API Endpoints ====
+
+// Helper: Convert MongoDB documents to Excel-friendly format
+function flattenDocument(doc) {
+  const flat = {};
+  for (const [key, value] of Object.entries(doc)) {
+    if (value instanceof Date) {
+      flat[key] = value.toISOString();
+    } else if (typeof value === 'object' && value !== null) {
+      flat[key] = JSON.stringify(value);
+    } else {
+      flat[key] = value;
+    }
+  }
+  return flat;
+}
+
+// Helper: Create Excel buffer from data
+function createExcelBuffer(data, sheetName) {
+  const flatData = data.map(flattenDocument);
+  const ws = XLSX.utils.json_to_sheet(flatData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+// Export payments to Excel
+app.get('/export/payments', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const payments = await paymentsCollection.find({}).toArray();
+    if (payments.length === 0) {
+      return res.status(404).json({ error: 'No payments found' });
+    }
+
+    const buffer = createExcelBuffer(payments, 'Payments');
+    const filename = `payments_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export customers to Excel
+app.get('/export/customers', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const customers = await customersCollection.find({}).toArray();
+    if (customers.length === 0) {
+      return res.status(404).json({ error: 'No customers found' });
+    }
+
+    const buffer = createExcelBuffer(customers, 'Customers');
+    const filename = `customers_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export fraud alerts to Excel
+app.get('/export/fraud', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const fraudAlerts = await fraudAlertsCollection.find({}).toArray();
+    if (fraudAlerts.length === 0) {
+      return res.status(404).json({ error: 'No fraud alerts found' });
+    }
+
+    const buffer = createExcelBuffer(fraudAlerts, 'FraudAlerts');
+    const filename = `fraud_alerts_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export invoice readings to Excel
+app.get('/export/invoices', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const invoices = await excelReadingsCollection.find({}).toArray();
+    if (invoices.length === 0) {
+      return res.status(404).json({ error: 'No invoice readings found' });
+    }
+
+    const buffer = createExcelBuffer(invoices, 'InvoiceReadings');
+    const filename = `invoice_readings_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export all data to Excel (multiple sheets)
+app.get('/export/all', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const wb = XLSX.utils.book_new();
+
+    // Add payments sheet
+    const payments = await paymentsCollection.find({}).toArray();
+    if (payments.length > 0) {
+      const ws = XLSX.utils.json_to_sheet(payments.map(flattenDocument));
+      XLSX.utils.book_append_sheet(wb, ws, 'Payments');
+    }
+
+    // Add customers sheet
+    const customers = await customersCollection.find({}).toArray();
+    if (customers.length > 0) {
+      const ws = XLSX.utils.json_to_sheet(customers.map(flattenDocument));
+      XLSX.utils.book_append_sheet(wb, ws, 'Customers');
+    }
+
+    // Add fraud alerts sheet
+    const fraudAlerts = await fraudAlertsCollection.find({}).toArray();
+    if (fraudAlerts.length > 0) {
+      const ws = XLSX.utils.json_to_sheet(fraudAlerts.map(flattenDocument));
+      XLSX.utils.book_append_sheet(wb, ws, 'FraudAlerts');
+    }
+
+    // Add invoice readings sheet
+    const invoices = await excelReadingsCollection.find({}).toArray();
+    if (invoices.length > 0) {
+      const ws = XLSX.utils.json_to_sheet(invoices.map(flattenDocument));
+      XLSX.utils.book_append_sheet(wb, ws, 'InvoiceReadings');
+    }
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `export_all_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start Express server
 app.listen(PORT, () => {
   console.log(`🌐 Health server running on port ${PORT}`);
@@ -368,6 +540,7 @@ app.listen(PORT, () => {
   console.log(`⏰ Overdue customers: http://localhost:${PORT}/customers/overdue`);
   console.log(`🚨 Fraud alerts: http://localhost:${PORT}/fraud/alerts`);
   console.log(`🔍 Fraud stats: http://localhost:${PORT}/fraud/stats`);
+  console.log(`📥 Export data: http://localhost:${PORT}/export/all`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
