@@ -1337,29 +1337,49 @@ RULES:
       verificationNotes = 'Cannot verify - missing expected amount or extracted amount';
     }
 
-    // ==== SECURITY: Recipient Account Verification (REQUIRED) ====
+    // ==== SECURITY: Recipient Verification (Account Number OR Recipient Name) ====
     const expectedAccount = process.env.EXPECTED_RECIPIENT_ACCOUNT;
+    const expectedRecipientName = process.env.EXPECTED_RECIPIENT_NAME || 'CHAN K. & THOEURN T.';
 
     // Warn if security setting is not configured
     if (!expectedAccount || expectedAccount.trim() === '') {
-      console.warn('⚠️ SECURITY WARNING: EXPECTED_RECIPIENT_ACCOUNT not set! Cannot verify recipient account.');
+      console.warn('⚠️ SECURITY WARNING: EXPECTED_RECIPIENT_ACCOUNT not set! Cannot verify recipient.');
     }
 
-    // Verify recipient account if configured
+    // Verify recipient - check BOTH account number AND recipient name
+    // KHQR payments may show recipient NAME instead of account NUMBER
     if (expectedAccount && expectedAccount.trim() !== '') {
-      if (!paymentData.toAccount || paymentData.toAccount.trim() === '') {
-        // GPT-4 couldn't extract toAccount from screenshot
+      const toAccount = paymentData.toAccount || '';
+      const recipientName = paymentData.recipientName || '';
+
+      // Normalize for comparison (remove spaces, lowercase)
+      const normalizedToAccount = toAccount.replace(/\s/g, '').toLowerCase();
+      const normalizedExpectedAccount = expectedAccount.replace(/\s/g, '').toLowerCase();
+      const normalizedRecipientName = recipientName.replace(/\s/g, '').toLowerCase();
+
+      // Check 1: Account number matches
+      const accountMatch = normalizedToAccount === normalizedExpectedAccount;
+
+      // Check 2: Recipient name matches (for KHQR payments)
+      const nameInToAccount = toAccount.toLowerCase().includes('chan') && toAccount.toLowerCase().includes('thoeurn');
+      const nameMatch = normalizedRecipientName.includes('chan') && normalizedRecipientName.includes('thoeurn');
+
+      // Check 3: toAccount contains expected account number
+      const accountInToAccount = normalizedToAccount.includes(normalizedExpectedAccount);
+
+      if (accountMatch || nameMatch || nameInToAccount || accountInToAccount) {
+        // Recipient verified
+        console.log(`✅ SECURITY: Recipient verified | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName}`);
+      } else if (!toAccount && !recipientName) {
+        // No recipient info at all
         isVerified = false;
-        verificationNotes += ` | SECURITY: Recipient account not found in screenshot`;
-        console.log(`🚨 SECURITY: Missing toAccount | Chat ${chatId} | Expected: ${expectedAccount}`);
+        verificationNotes += ` | SECURITY: No recipient info found in screenshot`;
+        console.log(`🚨 SECURITY: Missing recipient info | Chat ${chatId}`);
       } else {
-        // Check if toAccount matches expected account
-        const accountMatch = paymentData.toAccount.replace(/\s/g, '') === expectedAccount.replace(/\s/g, '');
-        if (!accountMatch) {
-          isVerified = false;
-          verificationNotes += ` | SECURITY: Account mismatch - Expected ${expectedAccount}, got ${paymentData.toAccount}`;
-          console.log(`🚨 SECURITY: Wrong recipient account | Chat ${chatId} | Expected: ${expectedAccount} | Got: ${paymentData.toAccount}`);
-        }
+        // Recipient mismatch
+        isVerified = false;
+        verificationNotes += ` | SECURITY: Recipient mismatch - Expected ${expectedAccount} or ${expectedRecipientName}, got toAccount: ${toAccount}, name: ${recipientName}`;
+        console.log(`🚨 SECURITY: Recipient mismatch | Chat ${chatId} | Expected: ${expectedAccount}/${expectedRecipientName} | Got: ${toAccount}/${recipientName}`);
       }
     }
 
