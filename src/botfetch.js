@@ -1194,7 +1194,7 @@ async function organizeScreenshot(originalPath, verificationStatus) {
 }
 
 // ==== Payment OCR Analysis Function ====
-async function analyzePaymentScreenshot(imagePath, chatId, userId, username, fullName) {
+async function analyzePaymentScreenshot(imagePath, chatId, userId, username, fullName, groupName = null) {
   try {
     // Get customer's expected payment amount from excelreadings (invoiceDB)
     const excelReading = await excelReadingsCollection.findOne({ chatId: chatId });
@@ -1464,6 +1464,7 @@ RULES:
           userId: userId,
           username: username,
           fullName: fullName,
+          groupName: groupName,
           transactionDate: paymentData.transactionDate,
           uploadedAt: new Date(),
           screenshotAgeDays: dateValidation.ageDays,
@@ -1510,6 +1511,7 @@ RULES:
           userId: userId,
           username: username,
           fullName: fullName,
+          groupName: groupName,
           transactionDate: paymentData.transactionDate,
           uploadedAt: new Date(),
           screenshotAgeDays: null,
@@ -1607,6 +1609,7 @@ RULES:
       userId,
       username,
       fullName,
+      groupName,
       screenshotPath: organizedPath,
       uploadedAt: new Date(),
 
@@ -1646,9 +1649,10 @@ RULES:
       // Update customer payment status in real-time
       await updateCustomerPaymentStatus(chatId, paymentRecord);
 
-      // Clean output with clear status label
+      // Clean output with clear status label and user info
       const statusIcon = paymentLabel === 'PAID' ? '✅' : paymentLabel === 'UNPAID' ? '❌' : '⏳';
-      console.log(`${statusIcon} ${paymentLabel} | ${amountInKHR || 0} KHR | ${finalVerificationStatus.toUpperCase()}`);
+      const userInfo = groupName ? `${groupName} | @${username || 'unknown'}` : `@${username || 'unknown'} | ${fullName}`;
+      console.log(`${statusIcon} ${paymentLabel} | ${amountInKHR || 0} KHR | ${finalVerificationStatus.toUpperCase()} | ${userInfo} | Chat: ${chatId}`);
 
     } catch (dbError) {
       console.error('❌ Failed to save payment record to database:', dbError);
@@ -1701,6 +1705,8 @@ async function handleMessage(message) {
   const firstName = message.from.first_name || '';
   const lastName = message.from.last_name || '';
   const fullName = `${firstName} ${lastName}`.trim();
+  const groupName = message.chat.title || null; // Group/channel name (null for private chats)
+  const chatType = message.chat.type; // 'private', 'group', 'supergroup', 'channel'
   const text = message.text || message.caption || null;
   const timestamp = new Date();
   const uniqueId = uuidv4();
@@ -1733,7 +1739,7 @@ async function handleMessage(message) {
       filePath = localFilePath;
 
       // ---- ANALYZE PAYMENT SCREENSHOT WITH OCR ----
-      await analyzePaymentScreenshot(localFilePath, chatId, userId, username, fullName);
+      await analyzePaymentScreenshot(localFilePath, chatId, userId, username, fullName, groupName);
 
     } catch (err) {
       console.error('Error downloading file:', err);

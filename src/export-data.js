@@ -85,6 +85,45 @@ function flattenDocument(doc) {
   return flat;
 }
 
+// Reorder columns for payments export (most important first)
+function reorderPaymentColumns(docs) {
+  const columnOrder = [
+    // User Info
+    'chatId', 'userId', 'username', 'fullName', 'groupName',
+    // Payment Status
+    'paymentLabel', 'verificationStatus', 'rejectionReason',
+    // Payment Details
+    'amountInKHR', 'paymentAmount', 'currency', 'expectedAmountKHR',
+    // Transaction Info
+    'transactionId', 'referenceNumber', 'transactionDate',
+    // Account Info
+    'toAccount', 'recipientName', 'fromAccount', 'bankName',
+    // Verification
+    'isPaid', 'isVerified', 'isBankStatement', 'confidence',
+    // Metadata
+    'uploadedAt', 'screenshotPath', 'remark', 'verificationNotes',
+    // ID
+    '_id'
+  ];
+
+  return docs.map(doc => {
+    const ordered = {};
+    // Add columns in order
+    for (const col of columnOrder) {
+      if (doc[col] !== undefined) {
+        ordered[col] = doc[col];
+      }
+    }
+    // Add any remaining columns not in the order list
+    for (const [key, value] of Object.entries(doc)) {
+      if (!ordered.hasOwnProperty(key)) {
+        ordered[key] = value;
+      }
+    }
+    return ordered;
+  });
+}
+
 // Export collection to Excel
 async function exportCollection(db, collectionName, filename) {
   console.log(`📊 Exporting ${collectionName}...`);
@@ -144,10 +183,12 @@ async function exportAll() {
   const customerDB = customerClient.db(DB_NAME);
   const invoiceDB = invoiceClient.db(DB_NAME_INVOICE);
 
-  // Export payments
+  // Export payments (with reordered columns for readability)
   const payments = await customerDB.collection('payments').find({}).toArray();
   if (payments.length > 0) {
-    const ws = XLSX.utils.json_to_sheet(payments.map(flattenDocument));
+    const flatPayments = payments.map(flattenDocument);
+    const orderedPayments = reorderPaymentColumns(flatPayments);
+    const ws = XLSX.utils.json_to_sheet(orderedPayments);
     XLSX.utils.book_append_sheet(wb, ws, 'Payments');
     console.log(`  ✅ Payments: ${payments.length} records`);
   }
