@@ -1244,17 +1244,31 @@ Set isBankStatement=TRUE if:
 STEP 2: VERIFY PAYMENT (only if isBankStatement=TRUE)
 If this IS a bank statement, determine if it's a valid payment proof:
 
-Set isPaid=TRUE only if you can clearly see ALL of:
-- "Success", "Completed", or checkmark indicating completed transfer
-- Transaction/Reference ID
-- Amount transferred
-- Sender and Recipient account information
+Set isPaid=TRUE if this is a COMPLETED TRANSFER. Look for:
+
+ABA Bank format (IMPORTANT - no "Success" text!):
+- CT logo with minus amount (e.g., "-28,000 KHR" or "-6.99 USD")
+- Shows "Trx. ID:", "To account:", "From account:"
+- Minus sign = money was sent = completed transfer
+- Has Transaction ID and Reference number
+
+ACLEDA/Wing format:
+- Shows "រួចរាល់" (completed) or checkmark ✓
+- Green success screen with amount
+
+Other banks:
+- "Success", "Completed", "ជោគជ័យ" text
+- Checkmark or green confirmation
+
+A transfer IS PAID if you can see:
+1. Amount (even with minus sign like -28,000)
+2. Transaction ID or Reference number
+3. Recipient info (account number OR name like "CHAN K. & THOEURN T.")
 
 Set isPaid=FALSE but keep isBankStatement=TRUE if:
 - Image is too blurry to read
-- Image is cropped/partial
-- Cannot extract required fields
-- Shows pending/failed status
+- Image is cropped/partial - missing key fields
+- Shows "Pending", "Failed", or "Processing" status
 
 STEP 3: EXTRACT PAYMENT DATA (only if isPaid=TRUE)
 Extract ALL fields carefully:
