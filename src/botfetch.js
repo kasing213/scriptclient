@@ -1227,32 +1227,44 @@ async function analyzePaymentScreenshot(imagePath, chatId, userId, username, ful
                   type: 'text',
                   text: `You are a BANK STATEMENT VERIFICATION OCR system for Cambodian banks.
 
-STEP 1: VERIFY THIS IS A REAL BANK STATEMENT
-First, determine if this image is a GENUINE bank payment/transfer confirmation from a banking app.
+STEP 1: IDENTIFY IMAGE TYPE
+First, determine if this image is from a BANKING APP at all.
 
-IMMEDIATELY REJECT (set isPaid=false, confidence=low) if:
+Set isBankStatement=FALSE if:
 - This is a chat screenshot (Telegram, WhatsApp, Messenger, LINE, etc.)
-- This is an invoice, bill, receipt, or QR code (NOT payment proof)
-- This is a random photo, meme, or non-banking image
-- This is text/numbers without a bank app interface
-- This appears edited, manipulated, or fake
-- You cannot clearly identify a banking app interface
+- This is an invoice, bill, receipt, or QR code (NOT payment confirmation)
+- This is a random photo, meme, selfie, or non-banking image
+- This is text/numbers without a banking app interface
+- You cannot identify any banking app UI elements
 
-ONLY ACCEPT (isPaid=true) if you can clearly see ALL of:
-- Bank app interface (ABA Bank, Wing, ACLEDA, Canadia, Prince Bank, Sathapana)
+Set isBankStatement=TRUE if:
+- This shows a banking app interface (ABA Bank, Wing, ACLEDA, Canadia, Prince Bank, Sathapana)
+- Even if blurry, cropped, or partially visible - if it's clearly FROM a bank app
+
+STEP 2: VERIFY PAYMENT (only if isBankStatement=TRUE)
+If this IS a bank statement, determine if it's a valid payment proof:
+
+Set isPaid=TRUE only if you can clearly see ALL of:
 - "Success", "Completed", or checkmark indicating completed transfer
 - Transaction/Reference ID
 - Amount transferred
 - Sender and Recipient account information
 
-STEP 2: EXTRACT PAYMENT DATA (only if Step 1 passes)
-Extract ALL fields carefully. Pay special attention to:
+Set isPaid=FALSE but keep isBankStatement=TRUE if:
+- Image is too blurry to read
+- Image is cropped/partial
+- Cannot extract required fields
+- Shows pending/failed status
+
+STEP 3: EXTRACT PAYMENT DATA (only if isPaid=TRUE)
+Extract ALL fields carefully:
 - toAccount: The recipient account number (CRITICAL for security)
 - amount: The transfer amount (use POSITIVE number, ignore minus sign)
 - transactionId: The Trx. ID or Transaction ID
 
 Return JSON format:
 {
+  "isBankStatement": true/false,
   "isPaid": true/false,
   "amount": number (POSITIVE, e.g., 28000 not -28000),
   "currency": "KHR" or "USD",
@@ -1268,10 +1280,12 @@ Return JSON format:
 }
 
 RULES:
-1. If NOT a bank statement → isPaid=false, confidence=low, leave other fields null
-2. Amount MUST be positive (if shows -28,000 KHR, return 28000)
-3. toAccount is REQUIRED for security verification
-4. Be STRICT - when uncertain, return isPaid=false`
+1. isBankStatement is about IMAGE TYPE (is it from a bank app?)
+2. isPaid is about PAYMENT VALIDITY (can we verify the transfer?)
+3. Random photo → isBankStatement=false, isPaid=false, confidence=low
+4. Blurry bank statement → isBankStatement=true, isPaid=false, confidence=low
+5. Clear bank statement → isBankStatement=true, isPaid=true, confidence=high/medium
+6. Amount MUST be positive (if shows -28,000 KHR, return 28000)`
                 },
                 {
                   type: 'image_url',
@@ -1387,14 +1401,19 @@ RULES:
     let finalVerificationStatus = 'pending';
     let paymentLabel = 'PENDING';
 
-    // Accept both high and medium confidence if amount matches
-    if (isVerified && paymentData.confidence !== 'low' && paymentData.isPaid) {
+    // Only HIGH confidence + amount match = VERIFIED
+    // Medium confidence OR amount mismatch = PENDING (needs manual review)
+    // Low confidence OR not bank statement = REJECTED
+    if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
+      // HIGH confidence + amount matches = VERIFIED
       finalVerificationStatus = 'verified';
       paymentLabel = 'PAID';
     } else if (!paymentData.isPaid || paymentData.confidence === 'low') {
+      // Not bank statement OR low confidence = REJECTED
       finalVerificationStatus = 'rejected';
       paymentLabel = 'UNPAID';
-    } else if (paymentData.isPaid && !isVerified) {
+    } else if (paymentData.isPaid && (paymentData.confidence === 'medium' || !isVerified)) {
+      // Medium confidence OR amount mismatch = PENDING (needs review)
       finalVerificationStatus = 'pending';
       paymentLabel = 'PENDING';
     }
@@ -1496,20 +1515,47 @@ RULES:
       }
     }
 
-    // Send enhanced verification message to user (only for PAID and PENDING)
-    if (paymentData.isPaid) {
-      const message = buildVerificationMessage(
-        paymentData,
-        expectedAmountKHR,
-        amountInKHR,
-        isVerified,
-        finalVerificationStatus
-      );
+    // Message logic based on image type:
+    // - NOT a bank statement → SILENT (no message, no spam)
+    // - IS a bank statement → always send appropriate message
+    const isBankStatement = paymentData.isBankStatement !== false; // Default true for backward compatibility
+
+    if (!isBankStatement) {
+      // NOT a bank statement (random photo, meme, chat screenshot, etc.)
+      // SILENT REJECTION - no message, just log and continue
+      console.log(`🔇 Silent rejection - not a bank statement | Chat ${chatId}`);
+    } else {
+      // IS a bank statement - send appropriate message
+      let userMessage;
+      if (finalVerificationStatus === 'verified') {
+        userMessage = buildVerificationMessage(
+          paymentData,
+          expectedAmountKHR,
+          amountInKHR,
+          isVerified,
+          finalVerificationStatus
+        );
+      } else if (finalVerificationStatus === 'pending') {
+        userMessage = `⏳ កំពុងពិនិត្យ
+
+បង្កាន់ដៃរបស់អ្នកកំពុងត្រូវបានពិនិត្យ។
+យើងនឹងជូនដំណឹងប្រសិនបើត្រូវការព័ត៌មានបន្ថែម។
+
+(Your payment proof is under review. We'll update you shortly.)`;
+      } else {
+        // rejected - bank statement but blurry/unreadable
+        userMessage = `❌ រូបភាពមិនច្បាស់
+
+សូមផ្ញើរូបភាពច្បាស់នៃបង្កាន់ដៃផ្ទេរប្រាក់។
+
+(Image is unclear. Please resend a clearer photo of your bank transfer receipt.)`;
+      }
 
       try {
-        await bot.sendMessage(chatId, message);
+        await bot.sendMessage(chatId, userMessage);
+        console.log(`📤 Message sent for ${finalVerificationStatus}`);
       } catch (notifyErr) {
-        console.error('❌ Failed to send verification message:', notifyErr.message);
+        console.error('❌ Failed to send message:', notifyErr.message);
       }
     }
 
