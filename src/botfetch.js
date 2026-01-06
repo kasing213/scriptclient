@@ -935,6 +935,185 @@ function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVe
 
 // ==== Fraud Detection Helper Functions ====
 
+// Khmer numeral to Arabic numeral mapping
+const KHMER_NUMERALS = {
+  '០': '0', '១': '1', '២': '2', '៣': '3', '៤': '4',
+  '៥': '5', '៦': '6', '៧': '7', '៨': '8', '៩': '9'
+};
+
+// Khmer month names to month number (1-12)
+const KHMER_MONTHS = {
+  'មករា': 1,      // January
+  'កុម្ភៈ': 2,     // February
+  'មីនា': 3,      // March
+  'មេសា': 4,      // April
+  'ឧសភា': 5,      // May
+  'មិថុនា': 6,    // June
+  'កក្កដា': 7,    // July
+  'សីហា': 8,      // August
+  'កញ្ញា': 9,     // September
+  'តុលា': 10,     // October
+  'វិច្ឆិកា': 11,  // November
+  'ធ្នូ': 12       // December
+};
+
+// Alternative Khmer month spellings
+const KHMER_MONTHS_ALT = {
+  'មករ': 1,       // January (short)
+  'កុម្ភ': 2,      // February (short)
+  'មិនា': 3,      // March (alt spelling)
+  'មេសorg': 4,    // April (alt)
+  'ឧសភorg': 5,    // May (alt)
+  'មិថorg': 6,    // June (alt)
+  'កក្កorg': 7,   // July (alt)
+  'សីorg': 8,     // August (alt)
+  'កញorg': 9,     // September (alt)
+  'តorg': 10,     // October (alt)
+  'វorg': 11,     // November (alt)
+  'ធorg': 12      // December (alt)
+};
+
+/**
+ * Converts Khmer numerals to Arabic numerals
+ * @param {string} str - String containing Khmer numerals
+ * @returns {string} - String with Arabic numerals
+ */
+function convertKhmerNumerals(str) {
+  if (!str) return str;
+  let result = str;
+  for (const [khmer, arabic] of Object.entries(KHMER_NUMERALS)) {
+    result = result.replace(new RegExp(khmer, 'g'), arabic);
+  }
+  return result;
+}
+
+/**
+ * Parses Khmer date string to JavaScript Date object
+ * Supports formats:
+ * - "០៦ មករា ២០២៦" (pure Khmer)
+ * - "06 មករា 2026" (mixed)
+ * - "៦ មករorg ២០២៦ ១៣:៣៥" (with time)
+ * - "06/01/2026" or "06-01-2026" (standard with Khmer numerals)
+ *
+ * @param {string} dateStr - Date string potentially containing Khmer
+ * @returns {Date|null} - Parsed Date object or null if failed
+ */
+function parseKhmerDate(dateStr) {
+  if (!dateStr) return null;
+
+  try {
+    // First, try standard ISO parsing
+    const isoDate = new Date(dateStr);
+    if (!isNaN(isoDate.getTime())) {
+      return isoDate;
+    }
+
+    // Convert any Khmer numerals to Arabic
+    let normalized = convertKhmerNumerals(dateStr);
+
+    // Try standard parsing after numeral conversion
+    const afterNumerals = new Date(normalized);
+    if (!isNaN(afterNumerals.getTime())) {
+      return afterNumerals;
+    }
+
+    // Try to find Khmer month name
+    let month = null;
+    let monthMatch = null;
+
+    // Check for full Khmer month names
+    for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS)) {
+      if (normalized.includes(khmerMonth)) {
+        month = monthNum;
+        monthMatch = khmerMonth;
+        break;
+      }
+    }
+
+    // If no match, try alternative spellings
+    if (!month) {
+      for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS_ALT)) {
+        if (normalized.includes(khmerMonth)) {
+          month = monthNum;
+          monthMatch = khmerMonth;
+          break;
+        }
+      }
+    }
+
+    if (month && monthMatch) {
+      // Extract numbers from the string
+      // Replace month name with placeholder to find day and year
+      const withoutMonth = normalized.replace(monthMatch, ' MONTH ');
+      const numbers = withoutMonth.match(/\d+/g);
+
+      if (numbers && numbers.length >= 2) {
+        let day, year, hour = 0, minute = 0;
+
+        // Determine which number is day vs year
+        if (parseInt(numbers[0]) > 31) {
+          // First number is year (2026)
+          year = parseInt(numbers[0]);
+          day = parseInt(numbers[1]);
+        } else if (parseInt(numbers[1]) > 31) {
+          // Second number is year
+          day = parseInt(numbers[0]);
+          year = parseInt(numbers[1]);
+        } else if (numbers.length >= 2) {
+          // Assume format: day month year
+          day = parseInt(numbers[0]);
+          year = parseInt(numbers[numbers.length >= 3 ? 2 : 1]);
+          if (year < 100) year += 2000; // Handle 2-digit year
+        }
+
+        // Check for time (hour:minute)
+        if (numbers.length >= 4) {
+          hour = parseInt(numbers[numbers.length - 2]) || 0;
+          minute = parseInt(numbers[numbers.length - 1]) || 0;
+          // Validate time values
+          if (hour > 23) hour = 0;
+          if (minute > 59) minute = 0;
+        }
+
+        // Validate and create date
+        if (day && month && year && day >= 1 && day <= 31 && year >= 2020 && year <= 2100) {
+          const date = new Date(year, month - 1, day, hour, minute);
+          if (!isNaN(date.getTime())) {
+            return date;
+          }
+        }
+      }
+    }
+
+    // Try common date formats with converted numerals
+    // Format: DD/MM/YYYY or DD-MM-YYYY
+    const slashMatch = normalized.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (slashMatch) {
+      let day = parseInt(slashMatch[1]);
+      let monthNum = parseInt(slashMatch[2]);
+      let year = parseInt(slashMatch[3]);
+      if (year < 100) year += 2000;
+
+      // Handle both DD/MM/YYYY and MM/DD/YYYY (assume DD/MM for Cambodian context)
+      if (monthNum > 12 && day <= 12) {
+        [day, monthNum] = [monthNum, day];
+      }
+
+      if (day >= 1 && day <= 31 && monthNum >= 1 && monthNum <= 12) {
+        const date = new Date(year, monthNum - 1, day);
+        if (!isNaN(date.getTime())) {
+          return date;
+        }
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`❌ Khmer date parsing error: ${error.message}`);
+    return null;
+  }
+}
+
 /**
  * Validates transaction date and checks for screenshot age fraud
  * @param {string} transactionDateStr - Transaction date from OCR
@@ -959,13 +1138,14 @@ function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7)
     return result;
   }
 
-  // Check 2: Parse transaction date
+  // Check 2: Parse transaction date (supports both English and Khmer formats)
   let transactionDate;
   try {
-    transactionDate = new Date(transactionDateStr);
+    // Use parseKhmerDate which handles both English ISO and Khmer date formats
+    transactionDate = parseKhmerDate(transactionDateStr);
 
     // Check if date is valid
-    if (isNaN(transactionDate.getTime())) {
+    if (!transactionDate || isNaN(transactionDate.getTime())) {
       result.isValid = false;
       result.fraudType = 'INVALID_DATE';
       result.reason = `Invalid date format: ${transactionDateStr}`;
@@ -973,6 +1153,7 @@ function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7)
     }
 
     result.parsedDate = transactionDate;
+    console.log(`📅 Parsed date: "${transactionDateStr}" → ${transactionDate.toISOString()}`);
   } catch (error) {
     result.isValid = false;
     result.fraudType = 'INVALID_DATE';
@@ -1275,6 +1456,7 @@ Extract ALL fields carefully:
 - toAccount: The recipient account number (CRITICAL for security)
 - amount: The transfer amount (use POSITIVE number, ignore minus sign)
 - transactionId: The Trx. ID or Transaction ID
+- transactionDate: Extract date/time. Convert to ISO format (2026-01-04T13:35:00) if possible. If the date is in Khmer script with Khmer numerals or month names, extract as-is - our parser handles Khmer dates.
 
 Return JSON format:
 {
@@ -1287,7 +1469,7 @@ Return JSON format:
   "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
   "bankName": "string",
-  "transactionDate": "string (ISO format: YYYY-MM-DDTHH:mm:ss)",
+  "transactionDate": "string (ISO format preferred, or Khmer format if visible)",
   "remark": "string",
   "recipientName": "string",
   "confidence": "high/medium/low"

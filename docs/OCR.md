@@ -187,6 +187,54 @@ No message sent - just log internally.
 
 ---
 
+## Khmer Date Support
+
+The system supports both English and Khmer date formats in payment screenshots.
+
+### Supported Formats
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| ISO | `2026-01-04T13:35:00` | Direct JavaScript Date parse |
+| English | `04 Jan 2026 13:35` | Standard date parse |
+| DD/MM/YYYY | `04/01/2026` | Cambodian date format |
+| Khmer numerals | Unicode U+17E0 to U+17E9 | Auto-converted to Arabic 0-9 |
+| Khmer months | Khmer month names | Auto-recognized (see below) |
+
+### Khmer Numeral Conversion
+
+The parser converts Khmer Unicode numerals to Arabic numerals:
+- Khmer 0-9 (U+17E0 to U+17E9) are converted to Arabic 0-9
+
+### Khmer Month Recognition
+
+The parser recognizes all 12 Khmer month names:
+
+| Month | Khmer Name | Transliteration |
+|-------|------------|-----------------|
+| 1 | January | Makara |
+| 2 | February | Kompeak |
+| 3 | March | Mina |
+| 4 | April | Mesa |
+| 5 | May | Ousapha |
+| 6 | June | Mithona |
+| 7 | July | Kakada |
+| 8 | August | Seiha |
+| 9 | September | Kanha |
+| 10 | October | Tola |
+| 11 | November | Vicheka |
+| 12 | December | Thnu |
+
+### Date Validation Rules
+
+- **Maximum age**: 7 days (configurable via `MAX_SCREENSHOT_AGE_DAYS`)
+- **Future dates**: Rejected as potential fraud (FUTURE_DATE)
+- **Missing dates**: Flagged as MISSING_DATE
+- **Invalid format**: Marked as INVALID_DATE fraud type
+- **Old screenshots**: Rejected as OLD_SCREENSHOT with fraud alert
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
