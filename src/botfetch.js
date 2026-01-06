@@ -1351,71 +1351,78 @@ RULES:
       verificationNotes = 'Cannot verify - missing expected amount or extracted amount';
     }
 
-    // ==== SECURITY: Recipient Verification (Account Number OR Recipient Name) ====
-    const expectedAccount = process.env.EXPECTED_RECIPIENT_ACCOUNT;
-    const expectedRecipientName = process.env.EXPECTED_RECIPIENT_NAME || 'CHAN K. & THOEURN T.';
+    // ==== SECURITY: Recipient Verification ====
+    // Flexible matching for different bank formats:
+    // - ABA KHQR: "CHAN K. & THOEURN T."
+    // - ABA Transfer: "CHAN KASING AND THOEURN THEARY" + "086 228 226"
+    const toAccount = paymentData.toAccount || '';
+    const recipientName = paymentData.recipientName || '';
 
-    // Warn if security setting is not configured
-    if (!expectedAccount || expectedAccount.trim() === '') {
-      console.warn('⚠️ SECURITY WARNING: EXPECTED_RECIPIENT_ACCOUNT not set! Cannot verify recipient.');
+    // Combine and lowercase for matching
+    const combinedText = (toAccount + ' ' + recipientName).toLowerCase();
+    const normalizedAccount = toAccount.replace(/\s/g, '').toLowerCase();
+
+    // Check all possible formats
+    const recipientVerified = (
+      normalizedAccount.includes('086228226') ||     // account no spaces
+      combinedText.includes('086 228 226') ||        // account with spaces
+      combinedText.includes('chan k') ||             // "CHAN K." initials
+      combinedText.includes('thoeurn t') ||          // "THOEURN T." initials
+      combinedText.includes('chan kasing') ||        // full name
+      combinedText.includes('thoeurn theary')        // full name
+    );
+
+    if (recipientVerified) {
+      console.log(`✅ SECURITY: Recipient verified | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName}`);
+    } else if (!toAccount && !recipientName) {
+      console.log(`⚠️ SECURITY: No recipient info found | Chat ${chatId}`);
+    } else {
+      console.log(`🚨 SECURITY: Recipient mismatch | Chat ${chatId} | Got: ${toAccount} / ${recipientName}`);
     }
 
-    // Verify recipient - check BOTH account number AND recipient name
-    // KHQR payments may show recipient NAME instead of account NUMBER
-    if (expectedAccount && expectedAccount.trim() !== '') {
-      const toAccount = paymentData.toAccount || '';
-      const recipientName = paymentData.recipientName || '';
-
-      // Normalize for comparison (remove spaces, lowercase)
-      const normalizedToAccount = toAccount.replace(/\s/g, '').toLowerCase();
-      const normalizedExpectedAccount = expectedAccount.replace(/\s/g, '').toLowerCase();
-      const normalizedRecipientName = recipientName.replace(/\s/g, '').toLowerCase();
-
-      // Check 1: Account number matches
-      const accountMatch = normalizedToAccount === normalizedExpectedAccount;
-
-      // Check 2: Recipient name matches (for KHQR payments)
-      const nameInToAccount = toAccount.toLowerCase().includes('chan') && toAccount.toLowerCase().includes('thoeurn');
-      const nameMatch = normalizedRecipientName.includes('chan') && normalizedRecipientName.includes('thoeurn');
-
-      // Check 3: toAccount contains expected account number
-      const accountInToAccount = normalizedToAccount.includes(normalizedExpectedAccount);
-
-      if (accountMatch || nameMatch || nameInToAccount || accountInToAccount) {
-        // Recipient verified
-        console.log(`✅ SECURITY: Recipient verified | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName}`);
-      } else if (!toAccount && !recipientName) {
-        // No recipient info at all
-        isVerified = false;
-        verificationNotes += ` | SECURITY: No recipient info found in screenshot`;
-        console.log(`🚨 SECURITY: Missing recipient info | Chat ${chatId}`);
-      } else {
-        // Recipient mismatch
-        isVerified = false;
-        verificationNotes += ` | SECURITY: Recipient mismatch - Expected ${expectedAccount} or ${expectedRecipientName}, got toAccount: ${toAccount}, name: ${recipientName}`;
-        console.log(`🚨 SECURITY: Recipient mismatch | Chat ${chatId} | Expected: ${expectedAccount}/${expectedRecipientName} | Got: ${toAccount}/${recipientName}`);
-      }
-    }
-
-    // Determine final verification status and payment label
+    // ==== 3-STAGE VERIFICATION PIPELINE ====
     let finalVerificationStatus = 'pending';
     let paymentLabel = 'PENDING';
+    let rejectionReason = null;
 
-    // Only HIGH confidence + amount match = VERIFIED
-    // Medium confidence OR amount mismatch = PENDING (needs manual review)
-    // Low confidence OR not bank statement = REJECTED
-    if (isVerified && paymentData.confidence === 'high' && paymentData.isPaid) {
-      // HIGH confidence + amount matches = VERIFIED
-      finalVerificationStatus = 'verified';
-      paymentLabel = 'PAID';
-    } else if (!paymentData.isPaid || paymentData.confidence === 'low') {
-      // Not bank statement OR low confidence = REJECTED
+    // STAGE 1: Is it a bank statement?
+    if (paymentData.isBankStatement === false) {
       finalVerificationStatus = 'rejected';
+      rejectionReason = 'NOT_BANK_STATEMENT';
       paymentLabel = 'UNPAID';
-    } else if (paymentData.isPaid && (paymentData.confidence === 'medium' || !isVerified)) {
-      // Medium confidence OR amount mismatch = PENDING (needs review)
+      console.log(`🔇 Stage 1: NOT a bank statement | Chat ${chatId}`);
+    }
+    // STAGE 2: Confidence check (blurry?)
+    else if (paymentData.confidence !== 'high') {
       finalVerificationStatus = 'pending';
+      rejectionReason = 'BLURRY';
       paymentLabel = 'PENDING';
+      console.log(`⏳ Stage 2: Blurry/unclear (${paymentData.confidence} confidence) | Chat ${chatId}`);
+    }
+    // STAGE 3: Security verification (HIGH confidence only)
+    else {
+      // Check 3a: Recipient
+      if (!recipientVerified && (toAccount || recipientName)) {
+        finalVerificationStatus = 'rejected';
+        rejectionReason = 'WRONG_RECIPIENT';
+        paymentLabel = 'UNPAID';
+        verificationNotes += ` | SECURITY: Wrong recipient - got ${toAccount} / ${recipientName}`;
+        console.log(`❌ Stage 3a: Wrong recipient | Chat ${chatId}`);
+      }
+      // Check 3b: Amount
+      else if (!isVerified) {
+        finalVerificationStatus = 'pending';
+        rejectionReason = 'AMOUNT_MISMATCH';
+        paymentLabel = 'PENDING';
+        console.log(`⏳ Stage 3b: Amount mismatch | Chat ${chatId} | Expected: ${expectedAmountKHR} | Got: ${amountInKHR}`);
+      }
+      // All checks pass
+      else {
+        finalVerificationStatus = 'verified';
+        rejectionReason = null;
+        paymentLabel = 'PAID';
+        console.log(`✅ Stage 3: All checks passed | Chat ${chatId}`);
+      }
     }
 
     // ==== FRAUD DETECTION: Old Screenshot Check ====
@@ -1459,12 +1466,10 @@ RULES:
           actionTaken: 'HELD_FOR_REVIEW'
         });
 
-        // Override verification status → PENDING for manual review
-        // Only override if originally verified (don't change pending/rejected)
-        if (finalVerificationStatus === 'verified') {
-          finalVerificationStatus = 'pending';
-          paymentLabel = 'PENDING';
-        }
+        // Override verification status → REJECTED (fraud)
+        finalVerificationStatus = 'rejected';
+        rejectionReason = 'OLD_SCREENSHOT';
+        paymentLabel = 'UNPAID';
 
         // Update verification notes
         verificationNotes += ` | FRAUD: ${dateValidation.reason} | Alert: ${alertId}`;
@@ -1509,51 +1514,70 @@ RULES:
 
         // Override to REJECTED
         finalVerificationStatus = 'rejected';
+        rejectionReason = 'DUPLICATE_TRANSACTION';
         paymentLabel = 'UNPAID';
 
         verificationNotes += ` | FRAUD: Duplicate transaction ID (already used by another customer) | Alert: ${alertId}`;
       }
     }
 
-    // Message logic based on image type:
-    // - NOT a bank statement → SILENT (no message, no spam)
-    // - IS a bank statement → always send appropriate message
-    const isBankStatement = paymentData.isBankStatement !== false; // Default true for backward compatibility
+    // ==== MESSAGE LOGIC based on rejectionReason ====
+    let userMessage = null;
 
-    if (!isBankStatement) {
-      // NOT a bank statement (random photo, meme, chat screenshot, etc.)
-      // SILENT REJECTION - no message, just log and continue
+    if (rejectionReason === 'NOT_BANK_STATEMENT') {
+      // SILENT - no message for non-bank images
       console.log(`🔇 Silent rejection - not a bank statement | Chat ${chatId}`);
-    } else {
-      // IS a bank statement - send appropriate message
-      let userMessage;
-      if (finalVerificationStatus === 'verified') {
-        userMessage = buildVerificationMessage(
-          paymentData,
-          expectedAmountKHR,
-          amountInKHR,
-          isVerified,
-          finalVerificationStatus
-        );
-      } else if (finalVerificationStatus === 'pending') {
-        userMessage = `⏳ កំពុងពិនិត្យ
+    } else if (rejectionReason === 'BLURRY') {
+      // Bank statement but blurry - ask for clearer image
+      userMessage = `⏳ រូបភាពមិនច្បាស់
 
-បង្កាន់ដៃរបស់អ្នកកំពុងត្រូវបានពិនិត្យ។
-យើងនឹងជូនដំណឹងប្រសិនបើត្រូវការព័ត៌មានបន្ថែម។
+សូមផ្ញើរូបភាពច្បាស់ជាងនេះសម្រាប់ការផ្ទៀងផ្ទាត់។
 
-(Your payment proof is under review. We'll update you shortly.)`;
-      } else {
-        // rejected - bank statement but blurry/unreadable
-        userMessage = `❌ រូបភាពមិនច្បាស់
+(Image unclear. Please send a clearer photo for verification.)`;
+    } else if (rejectionReason === 'WRONG_RECIPIENT') {
+      // Wrong account - tell them
+      userMessage = `❌ គណនីមិនត្រឹមត្រូវ
 
-សូមផ្ញើរូបភាពច្បាស់នៃបង្កាន់ដៃផ្ទេរប្រាក់។
+សូមផ្ទេរប្រាក់ទៅគណនីត្រឹមត្រូវ។
 
-(Image is unclear. Please resend a clearer photo of your bank transfer receipt.)`;
-      }
+(Wrong account. Please transfer to the correct account.)`;
+    } else if (rejectionReason === 'OLD_SCREENSHOT') {
+      // Old screenshot - fraud alert
+      userMessage = `❌ រូបភាពចាស់ពេក
 
+សូមផ្ញើបង្កាន់ដៃថ្មី។
+
+(Screenshot too old. Please send a recent receipt.)`;
+    } else if (rejectionReason === 'DUPLICATE_TRANSACTION') {
+      // Duplicate transaction - fraud alert (silent or message?)
+      userMessage = `❌ បង្កាន់ដៃនេះត្រូវបានប្រើរួចហើយ
+
+សូមផ្ញើបង្កាន់ដៃផ្សេង។
+
+(This receipt has already been used. Please send a different receipt.)`;
+    } else if (rejectionReason === 'AMOUNT_MISMATCH') {
+      // Amount mismatch - show what they paid
+      userMessage = `⏳ បានទទួល ${amountInKHR || 0} KHR
+
+ចំនួនទឹកប្រាក់មិនត្រូវគ្នា។ សូមរង់ចាំការពិនិត្យ។
+
+(Received ${amountInKHR || 0} KHR. Amount mismatch - under review.)`;
+    } else if (finalVerificationStatus === 'verified') {
+      // VERIFIED - success message
+      userMessage = buildVerificationMessage(
+        paymentData,
+        expectedAmountKHR,
+        amountInKHR,
+        isVerified,
+        finalVerificationStatus
+      );
+    }
+
+    // Send message if not silent
+    if (userMessage) {
       try {
         await bot.sendMessage(chatId, userMessage);
-        console.log(`📤 Message sent for ${finalVerificationStatus}`);
+        console.log(`📤 Message sent | ${rejectionReason || 'VERIFIED'} | Chat ${chatId}`);
       } catch (notifyErr) {
         console.error('❌ Failed to send message:', notifyErr.message);
       }
@@ -1597,7 +1621,9 @@ RULES:
       // Analysis metadata
       confidence: paymentData.confidence || 'low',
       aiAnalysis: aiResponse,
-      verificationStatus: finalVerificationStatus
+      verificationStatus: finalVerificationStatus,
+      rejectionReason: rejectionReason,
+      isBankStatement: paymentData.isBankStatement !== false
     };
 
     try {
