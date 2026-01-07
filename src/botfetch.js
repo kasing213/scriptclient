@@ -1,7 +1,7 @@
 'use strict';
 
 const TelegramBot = require('node-telegram-bot-api');
-const { MongoClient } = require('mongodb');
+const { MongoClient, GridFSBucket } = require('mongodb');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { OpenAI } = require('openai');
@@ -141,6 +141,29 @@ app.get('/screenshots/:status/:name', async (req, res) => {
   }
 
   return res.sendFile(requestedPath);
+});
+
+// GridFS screenshot download endpoint (by screenshotId)
+app.get('/screenshots/gridfs/:id', async (req, res) => {
+  if (!SCREENSHOT_DOWNLOAD_TOKEN) {
+    return res.status(503).json({ error: 'download_disabled' });
+  }
+
+  if (!isDownloadAuthorized(req)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  try {
+    const screenshotId = req.params.id;
+    const imageBuffer = await downloadScreenshotFromGridFS(screenshotId);
+
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Content-Disposition', `inline; filename="${screenshotId}.jpg"`);
+    res.send(imageBuffer);
+  } catch (error) {
+    console.error('GridFS download error:', error.message);
+    return res.status(404).json({ error: 'screenshot_not_found' });
+  }
 });
 
 // Customer payment status endpoint
@@ -709,6 +732,7 @@ let paymentsCollection;
 let customersCollection;
 let fraudAlertsCollection;
 let excelReadingsCollection;
+let screenshotsBucket;
 
 async function startDB() {
   try {
@@ -726,6 +750,10 @@ async function startDB() {
     // Create index on transactionId for fast duplicate detection (security)
     await paymentsCollection.createIndex({ transactionId: 1 });
     console.log('✅ Transaction ID index created (duplicate detection)');
+
+    // Initialize GridFS bucket for screenshots
+    screenshotsBucket = new GridFSBucket(db, { bucketName: 'screenshots' });
+    console.log('✅ GridFS bucket initialized: screenshots');
 
     // Connect to invoiceDB
     await invoiceClient.connect();
@@ -748,6 +776,63 @@ async function startDB() {
     console.error('Error details:', { code: error.code, name: error.name });
     process.exit(1);
   }
+}
+
+// ==== GridFS Screenshot Storage ====
+
+/**
+ * Upload screenshot to GridFS
+ * @param {Buffer} buffer - Image buffer
+ * @param {string} filename - Filename
+ * @param {object} metadata - Additional metadata
+ * @returns {Promise<string>} - GridFS file ID
+ */
+async function uploadScreenshotToGridFS(buffer, filename, metadata = {}) {
+  return new Promise((resolve, reject) => {
+    const uploadStream = screenshotsBucket.openUploadStream(filename, {
+      metadata: {
+        ...metadata,
+        uploadedAt: new Date(),
+        contentType: 'image/jpeg'
+      }
+    });
+
+    uploadStream.on('finish', () => {
+      console.log(`📦 GridFS: Uploaded ${filename} (${uploadStream.id})`);
+      resolve(uploadStream.id.toString());
+    });
+
+    uploadStream.on('error', reject);
+    uploadStream.end(buffer);
+  });
+}
+
+/**
+ * Download screenshot from GridFS
+ * @param {string} fileId - GridFS file ID
+ * @returns {Promise<Buffer>} - Image buffer
+ */
+async function downloadScreenshotFromGridFS(fileId) {
+  const { ObjectId } = require('mongodb');
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const downloadStream = screenshotsBucket.openDownloadStream(new ObjectId(fileId));
+
+    downloadStream.on('data', chunk => chunks.push(chunk));
+    downloadStream.on('end', () => resolve(Buffer.concat(chunks)));
+    downloadStream.on('error', reject);
+  });
+}
+
+/**
+ * Get screenshot info from GridFS
+ * @param {string} fileId - GridFS file ID
+ * @returns {Promise<object>} - File metadata
+ */
+async function getScreenshotInfo(fileId) {
+  const { ObjectId } = require('mongodb');
+  const db = client.db(DB_NAME);
+  return db.collection('screenshots.files').findOne({ _id: new ObjectId(fileId) });
 }
 
 // ==== Currency Conversion Helper ====
@@ -1784,6 +1869,22 @@ RULES:
     // Organize screenshot into appropriate folder
     const organizedPath = await organizeScreenshot(imagePath, finalVerificationStatus);
 
+    // Upload screenshot to GridFS
+    let screenshotId = null;
+    try {
+      const imageBuffer = await fs.promises.readFile(organizedPath);
+      const filename = path.basename(organizedPath);
+      screenshotId = await uploadScreenshotToGridFS(imageBuffer, filename, {
+        chatId,
+        userId,
+        username,
+        verificationStatus: finalVerificationStatus,
+        transactionId: paymentData.transactionId || null
+      });
+    } catch (gridfsErr) {
+      console.error('⚠️ GridFS upload failed (keeping local file):', gridfsErr.message);
+    }
+
     // Store in payments collection
     const paymentRecord = {
       _id: uuidv4(),
@@ -1793,6 +1894,7 @@ RULES:
       fullName,
       groupName,
       screenshotPath: organizedPath,
+      screenshotId: screenshotId,
       uploadedAt: new Date(),
 
       // Payment Status Label
