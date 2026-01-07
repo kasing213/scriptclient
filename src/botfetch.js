@@ -9,6 +9,7 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const XLSX = require('xlsx');
+const archiver = require('archiver');
 const express = require('express');
 process.on('unhandledRejection', (r)=>{console.error('UNHANDLED', r?.message, r?.stack)});
 process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.stack)});
@@ -553,6 +554,85 @@ app.get('/export/all', async (req, res) => {
   }
 });
 
+// Export screenshots as ZIP (organized by status)
+app.get('/export/screenshots', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (SCREENSHOT_DOWNLOAD_TOKEN && token !== SCREENSHOT_DOWNLOAD_TOKEN) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const status = req.query.status; // Optional: 'verified', 'pending', 'rejected', or 'all'
+    const source = req.query.source || 'both'; // 'local', 'gridfs', or 'both'
+
+    const filename = `screenshots_${status || 'all'}_${new Date().toISOString().split('T')[0]}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const archive = archiver('zip', { zlib: { level: 5 } });
+
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      res.status(500).json({ error: 'Archive failed' });
+    });
+
+    archive.pipe(res);
+
+    const statuses = status && status !== 'all'
+      ? [status]
+      : ['verified', 'pending', 'rejected'];
+
+    // Add local files
+    if (source === 'local' || source === 'both') {
+      for (const s of statuses) {
+        const statusDir = path.resolve(SCREENSHOT_DIR, s);
+        try {
+          const files = await fs.promises.readdir(statusDir);
+          for (const file of files) {
+            if (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.jpeg')) {
+              const filePath = path.join(statusDir, file);
+              archive.file(filePath, { name: `${s}/${file}` });
+            }
+          }
+          console.log(`📦 Added ${files.length} files from ${s}/`);
+        } catch (err) {
+          if (err.code !== 'ENOENT') console.error(`Error reading ${s}:`, err.message);
+        }
+      }
+    }
+
+    // Add GridFS files
+    if (source === 'gridfs' || source === 'both') {
+      const db = client.db(DB_NAME);
+      const filesCollection = db.collection('screenshots.files');
+
+      for (const s of statuses) {
+        const gridfsFiles = await filesCollection.find({
+          'metadata.verificationStatus': s
+        }).toArray();
+
+        for (const file of gridfsFiles) {
+          try {
+            const buffer = await downloadScreenshotFromGridFS(file._id.toString());
+            archive.append(buffer, { name: `gridfs_${s}/${file.filename}` });
+          } catch (err) {
+            console.error(`Failed to download GridFS file ${file._id}:`, err.message);
+          }
+        }
+        console.log(`📦 Added ${gridfsFiles.length} GridFS files from ${s}`);
+      }
+    }
+
+    await archive.finalize();
+    console.log(`✅ Screenshot export completed: ${filename}`);
+
+  } catch (error) {
+    console.error('Screenshot export error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start Express server
 app.listen(PORT, () => {
   console.log(`🌐 Health server running on port ${PORT}`);
@@ -564,6 +644,7 @@ app.listen(PORT, () => {
   console.log(`🚨 Fraud alerts: http://localhost:${PORT}/fraud/alerts`);
   console.log(`🔍 Fraud stats: http://localhost:${PORT}/fraud/stats`);
   console.log(`📥 Export data: http://localhost:${PORT}/export/all`);
+  console.log(`🖼️ Export screenshots: http://localhost:${PORT}/export/screenshots`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
