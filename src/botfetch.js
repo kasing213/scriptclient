@@ -1154,6 +1154,47 @@ function convertKhmerNumerals(str) {
 }
 
 /**
+ * Normalizes Khmer text by removing zero-width characters and extra spaces
+ * @param {string} str - String to normalize
+ * @returns {string} - Normalized string
+ */
+function normalizeKhmerText(str) {
+  if (!str) return str;
+  return str
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '') // Remove zero-width chars and non-breaking spaces
+    .replace(/\s+/g, ' ')                         // Normalize multiple spaces to single
+    .trim();
+}
+
+/**
+ * Finds Khmer month name in a string and returns the month number
+ * Uses normalized matching to handle Unicode variations
+ * @param {string} str - String to search
+ * @returns {object|null} - { month: number, match: string } or null
+ */
+function findKhmerMonth(str) {
+  if (!str) return null;
+
+  const normalized = normalizeKhmerText(str);
+
+  // Try exact match first with primary month names
+  for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS)) {
+    if (normalized.includes(khmerMonth)) {
+      return { month: monthNum, match: khmerMonth };
+    }
+  }
+
+  // Try alternative spellings
+  for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS_ALT)) {
+    if (normalized.includes(khmerMonth)) {
+      return { month: monthNum, match: khmerMonth };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Parses Khmer date string to JavaScript Date object
  * Supports formats:
  * - "០៦ មករា ២០២៦" (pure Khmer)
@@ -1168,83 +1209,102 @@ function parseKhmerDate(dateStr) {
   if (!dateStr) return null;
 
   try {
+    // Debug logging for Khmer date parsing
+    console.log(`[KHMER-DATE] Input: "${dateStr}"`);
+
     // First, try standard ISO parsing
     const isoDate = new Date(dateStr);
     if (!isNaN(isoDate.getTime())) {
+      console.log(`[KHMER-DATE] Parsed as ISO: ${isoDate.toISOString()}`);
       return isoDate;
     }
 
-    // Convert any Khmer numerals to Arabic
-    let normalized = convertKhmerNumerals(dateStr);
+    // Normalize and convert Khmer numerals to Arabic
+    let normalized = normalizeKhmerText(dateStr);
+    normalized = convertKhmerNumerals(normalized);
+    console.log(`[KHMER-DATE] Normalized: "${normalized}"`);
+
+    // Handle pipe separator - split date and time parts
+    let datePart = normalized;
+    let timePart = '';
+    if (normalized.includes('|')) {
+      const parts = normalized.split('|');
+      datePart = parts[0].trim();
+      timePart = parts[1]?.trim() || '';
+      console.log(`[KHMER-DATE] Date part: "${datePart}", Time part: "${timePart}"`);
+    }
 
     // Try standard parsing after numeral conversion
     const afterNumerals = new Date(normalized);
     if (!isNaN(afterNumerals.getTime())) {
+      console.log(`[KHMER-DATE] Parsed after numeral conversion: ${afterNumerals.toISOString()}`);
       return afterNumerals;
     }
 
-    // Try to find Khmer month name
-    let month = null;
-    let monthMatch = null;
+    // Use findKhmerMonth helper for better matching
+    const monthResult = findKhmerMonth(datePart);
+    let month = monthResult?.month || null;
+    let monthMatch = monthResult?.match || null;
 
-    // Check for full Khmer month names
-    for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS)) {
-      if (normalized.includes(khmerMonth)) {
-        month = monthNum;
-        monthMatch = khmerMonth;
-        break;
-      }
-    }
-
-    // If no match, try alternative spellings
-    if (!month) {
-      for (const [khmerMonth, monthNum] of Object.entries(KHMER_MONTHS_ALT)) {
-        if (normalized.includes(khmerMonth)) {
-          month = monthNum;
-          monthMatch = khmerMonth;
-          break;
-        }
-      }
-    }
+    console.log(`[KHMER-DATE] Month match: ${month ? `${monthMatch} -> ${month}` : 'none'}`);
 
     if (month && monthMatch) {
-      // Extract numbers from the string
-      // Replace month name with placeholder to find day and year
-      const withoutMonth = normalized.replace(monthMatch, ' MONTH ');
-      const numbers = withoutMonth.match(/\d+/g);
+      // Extract numbers from the DATE part only (not time)
+      const withoutMonth = datePart.replace(monthMatch, ' MONTH ');
+      const dateNumbers = withoutMonth.match(/\d+/g) || [];
 
-      if (numbers && numbers.length >= 2) {
-        let day, year, hour = 0, minute = 0;
+      // Extract time separately from time part
+      let hour = 0, minute = 0;
+      if (timePart) {
+        const timeNumbers = timePart.match(/\d+/g) || [];
+        if (timeNumbers.length >= 2) {
+          hour = parseInt(timeNumbers[0]) || 0;
+          minute = parseInt(timeNumbers[1]) || 0;
+        }
+      }
+
+      console.log(`[KHMER-DATE] Date numbers: ${JSON.stringify(dateNumbers)}, Time: ${hour}:${minute}`);
+
+      if (dateNumbers && dateNumbers.length >= 2) {
+        let day, year;
 
         // Determine which number is day vs year
-        if (parseInt(numbers[0]) > 31) {
+        if (parseInt(dateNumbers[0]) > 31) {
           // First number is year (2026)
-          year = parseInt(numbers[0]);
-          day = parseInt(numbers[1]);
-        } else if (parseInt(numbers[1]) > 31) {
+          year = parseInt(dateNumbers[0]);
+          day = parseInt(dateNumbers[1]);
+        } else if (parseInt(dateNumbers[1]) > 31) {
           // Second number is year
-          day = parseInt(numbers[0]);
-          year = parseInt(numbers[1]);
-        } else if (numbers.length >= 2) {
-          // Assume format: day month year
-          day = parseInt(numbers[0]);
-          year = parseInt(numbers[numbers.length >= 3 ? 2 : 1]);
+          day = parseInt(dateNumbers[0]);
+          year = parseInt(dateNumbers[1]);
+        } else if (dateNumbers.length >= 2) {
+          // Assume format: day month year - look for 4-digit year
+          day = parseInt(dateNumbers[0]);
+          // Find the year (should be 4 digits or > 31)
+          for (let i = 1; i < dateNumbers.length; i++) {
+            const num = parseInt(dateNumbers[i]);
+            if (num > 31 || dateNumbers[i].length === 4) {
+              year = num;
+              break;
+            }
+          }
+          if (!year) {
+            year = parseInt(dateNumbers[dateNumbers.length - 1]);
+          }
           if (year < 100) year += 2000; // Handle 2-digit year
         }
 
-        // Check for time (hour:minute)
-        if (numbers.length >= 4) {
-          hour = parseInt(numbers[numbers.length - 2]) || 0;
-          minute = parseInt(numbers[numbers.length - 1]) || 0;
-          // Validate time values
-          if (hour > 23) hour = 0;
-          if (minute > 59) minute = 0;
-        }
+        // Validate time values
+        if (hour > 23) hour = 0;
+        if (minute > 59) minute = 0;
+
+        console.log(`[KHMER-DATE] Extracted: day=${day}, month=${month}, year=${year}, hour=${hour}, minute=${minute}`);
 
         // Validate and create date
         if (day && month && year && day >= 1 && day <= 31 && year >= 2020 && year <= 2100) {
           const date = new Date(year, month - 1, day, hour, minute);
           if (!isNaN(date.getTime())) {
+            console.log(`[KHMER-DATE] Successfully parsed: ${date.toISOString()}`);
             return date;
           }
         }
@@ -1268,14 +1328,16 @@ function parseKhmerDate(dateStr) {
       if (day >= 1 && day <= 31 && monthNum >= 1 && monthNum <= 12) {
         const date = new Date(year, monthNum - 1, day);
         if (!isNaN(date.getTime())) {
+          console.log(`[KHMER-DATE] Parsed via slash format: ${date.toISOString()}`);
           return date;
         }
       }
     }
 
+    console.log(`[KHMER-DATE] Failed to parse date string: "${dateStr}"`);
     return null;
   } catch (error) {
-    console.error(`❌ Khmer date parsing error: ${error.message}`);
+    console.error(`[KHMER-DATE] ❌ Parsing error for "${dateStr}": ${error.message}`);
     return null;
   }
 }
