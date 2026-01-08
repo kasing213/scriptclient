@@ -353,26 +353,71 @@ app.post('/fraud/alert/:alertId/review', async (req, res) => {
 
 // ==== PAYMENT APPROVAL ENDPOINTS ====
 
+// Helper: Clean error response with logging
+function handleApiError(res, error, context, statusCode = 500) {
+  const errorId = `ERR-${Date.now().toString(36).toUpperCase()}`;
+  const timestamp = new Date().toISOString();
+
+  console.error(`❌ [${timestamp}] ${context}`);
+  console.error(`   Error ID: ${errorId}`);
+  console.error(`   Message: ${error.message}`);
+  if (error.stack) {
+    console.error(`   Stack: ${error.stack.split('\n')[1]?.trim()}`);
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    error: error.message,
+    errorId: errorId,
+    timestamp: timestamp
+  });
+}
+
+// Helper: Clean success log
+function logSuccess(action, details) {
+  const timestamp = new Date().toISOString();
+  console.log(`✅ [${timestamp}] ${action}`);
+  if (details) {
+    Object.entries(details).forEach(([key, value]) => {
+      console.log(`   ${key}: ${value}`);
+    });
+  }
+}
+
 // Approve a pending payment manually
 app.post('/api/payment/:paymentId/approve', async (req, res) => {
-  try {
-    const { paymentId } = req.params;
-    const { approvedAmount, currency, reviewNotes, approvedBy } = req.body;
+  const { paymentId } = req.params;
+  const { approvedAmount, currency, reviewNotes, approvedBy } = req.body;
 
+  try {
     // Validate required fields
-    if (!approvedAmount || approvedAmount <= 0) {
-      return res.status(400).json({ error: 'approvedAmount is required and must be positive' });
+    if (!approvedAmount || isNaN(approvedAmount) || approvedAmount <= 0) {
+      console.log(`⚠️ [APPROVE] Invalid amount: ${approvedAmount} | Payment: ${paymentId}`);
+      return res.status(400).json({
+        success: false,
+        error: 'approvedAmount is required and must be a positive number',
+        received: approvedAmount
+      });
     }
 
     // Find the payment
     const payment = await paymentsCollection.findOne({ _id: paymentId });
     if (!payment) {
-      return res.status(404).json({ error: 'Payment not found' });
+      console.log(`⚠️ [APPROVE] Payment not found: ${paymentId}`);
+      return res.status(404).json({
+        success: false,
+        error: 'Payment not found',
+        paymentId: paymentId
+      });
     }
 
     if (payment.paymentLabel !== 'PENDING') {
+      console.log(`⚠️ [APPROVE] Payment not pending: ${paymentId} | Status: ${payment.paymentLabel}`);
       return res.status(400).json({
-        error: `Payment is not pending. Current status: ${payment.paymentLabel}`
+        success: false,
+        error: `Payment is not pending`,
+        currentStatus: payment.paymentLabel,
+        paymentId: paymentId
       });
     }
 
@@ -384,7 +429,7 @@ app.post('/api/payment/:paymentId/approve', async (req, res) => {
     const USD_TO_KHR = parseFloat(process.env.USD_TO_KHR_RATE) || 4000;
     const amountInKHR = (currency === 'USD')
       ? approvedAmount * USD_TO_KHR
-      : approvedAmount;
+      : parseFloat(approvedAmount);
 
     // Update payment to PAID
     await paymentsCollection.updateOne(
@@ -393,7 +438,7 @@ app.post('/api/payment/:paymentId/approve', async (req, res) => {
         $set: {
           paymentLabel: 'PAID',
           verificationStatus: 'verified',
-          paymentAmount: approvedAmount,
+          paymentAmount: parseFloat(approvedAmount),
           amountInKHR: amountInKHR,
           currency: currency || 'KHR',
           isVerified: true,
@@ -411,8 +456,15 @@ app.post('/api/payment/:paymentId/approve', async (req, res) => {
     // Get updated customer state
     const customerAfter = await customersCollection.findOne({ chatId: payment.chatId });
 
-    console.log(`✅ Payment ${paymentId} approved | Amount: ${amountInKHR} KHR | ` +
-                `Customer ${payment.chatId}: ${previousTotalPaid} → ${customerAfter?.totalPaid} KHR`);
+    logSuccess('PAYMENT APPROVED', {
+      'Payment ID': paymentId,
+      'Amount': `${amountInKHR.toLocaleString()} KHR`,
+      'Chat ID': payment.chatId,
+      'Customer': customerAfter?.customerName || 'Unknown',
+      'Total Paid': `${previousTotalPaid.toLocaleString()} → ${customerAfter?.totalPaid?.toLocaleString()} KHR`,
+      'Status': `${customerBefore?.paymentStatus || 'NOT_PAID'} → ${customerAfter?.paymentStatus}`,
+      'Approved By': approvedBy || 'admin'
+    });
 
     res.json({
       success: true,
@@ -420,7 +472,7 @@ app.post('/api/payment/:paymentId/approve', async (req, res) => {
         paymentId: paymentId,
         previousStatus: 'PENDING',
         newStatus: 'PAID',
-        approvedAmount: approvedAmount,
+        approvedAmount: parseFloat(approvedAmount),
         currency: currency || 'KHR',
         amountInKHR: amountInKHR
       },
@@ -435,8 +487,7 @@ app.post('/api/payment/:paymentId/approve', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Error approving payment:', error.message);
-    res.status(500).json({ error: error.message });
+    return handleApiError(res, error, `APPROVE PAYMENT | ID: ${paymentId}`);
   }
 });
 
@@ -462,21 +513,33 @@ app.get('/api/payments/pending', async (req, res) => {
       };
     }));
 
+    console.log(`📋 [PENDING] Fetched ${enrichedPayments.length} pending payments`);
+
     res.json({
+      success: true,
       count: enrichedPayments.length,
       payments: enrichedPayments
     });
   } catch (error) {
-    console.error('❌ Error fetching pending payments:', error.message);
-    res.status(500).json({ error: error.message });
+    return handleApiError(res, error, 'FETCH PENDING PAYMENTS');
   }
 });
 
 // Get customer payment history with summary
 app.get('/api/customer/:chatId/payments', async (req, res) => {
-  try {
-    const chatId = parseInt(req.params.chatId);
+  const chatId = parseInt(req.params.chatId);
 
+  // Validate chatId
+  if (isNaN(chatId)) {
+    console.log(`⚠️ [CUSTOMER] Invalid chatId: ${req.params.chatId}`);
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid chatId - must be a number',
+      received: req.params.chatId
+    });
+  }
+
+  try {
     const payments = await paymentsCollection.find({
       chatId: chatId
     }).sort({ uploadedAt: -1 }).toArray();
@@ -488,7 +551,10 @@ app.get('/api/customer/:chatId/payments', async (req, res) => {
     const pendingPayments = payments.filter(p => p.paymentLabel === 'PENDING');
     const rejectedPayments = payments.filter(p => p.paymentLabel === 'UNPAID');
 
+    console.log(`👤 [CUSTOMER] Chat ${chatId} | Paid: ${paidPayments.length} | Pending: ${pendingPayments.length} | Total: ${customer?.totalPaid?.toLocaleString() || 0} KHR`);
+
     res.json({
+      success: true,
       customer: customer || { chatId: chatId, paymentStatus: 'NOT_PAID' },
       payments: payments,
       summary: {
@@ -513,8 +579,7 @@ app.get('/api/customer/:chatId/payments', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Error fetching customer payments:', error.message);
-    res.status(500).json({ error: error.message });
+    return handleApiError(res, error, `FETCH CUSTOMER PAYMENTS | Chat: ${chatId}`);
   }
 });
 
