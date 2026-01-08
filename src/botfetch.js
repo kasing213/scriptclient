@@ -351,6 +351,173 @@ app.post('/fraud/alert/:alertId/review', async (req, res) => {
   }
 });
 
+// ==== PAYMENT APPROVAL ENDPOINTS ====
+
+// Approve a pending payment manually
+app.post('/api/payment/:paymentId/approve', async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const { approvedAmount, currency, reviewNotes, approvedBy } = req.body;
+
+    // Validate required fields
+    if (!approvedAmount || approvedAmount <= 0) {
+      return res.status(400).json({ error: 'approvedAmount is required and must be positive' });
+    }
+
+    // Find the payment
+    const payment = await paymentsCollection.findOne({ _id: paymentId });
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (payment.paymentLabel !== 'PENDING') {
+      return res.status(400).json({
+        error: `Payment is not pending. Current status: ${payment.paymentLabel}`
+      });
+    }
+
+    // Get customer's current state before update
+    const customerBefore = await customersCollection.findOne({ chatId: payment.chatId });
+    const previousTotalPaid = customerBefore?.totalPaid || 0;
+
+    // Calculate amount in KHR
+    const USD_TO_KHR = parseFloat(process.env.USD_TO_KHR_RATE) || 4000;
+    const amountInKHR = (currency === 'USD')
+      ? approvedAmount * USD_TO_KHR
+      : approvedAmount;
+
+    // Update payment to PAID
+    await paymentsCollection.updateOne(
+      { _id: paymentId },
+      {
+        $set: {
+          paymentLabel: 'PAID',
+          verificationStatus: 'verified',
+          paymentAmount: approvedAmount,
+          amountInKHR: amountInKHR,
+          currency: currency || 'KHR',
+          isVerified: true,
+          manuallyApproved: true,
+          approvedAt: new Date(),
+          approvedBy: approvedBy || 'admin',
+          reviewNotes: reviewNotes || 'Manually approved'
+        }
+      }
+    );
+
+    // Recalculate customer totals
+    await updateCustomerPaymentStatus(payment.chatId);
+
+    // Get updated customer state
+    const customerAfter = await customersCollection.findOne({ chatId: payment.chatId });
+
+    console.log(`✅ Payment ${paymentId} approved | Amount: ${amountInKHR} KHR | ` +
+                `Customer ${payment.chatId}: ${previousTotalPaid} → ${customerAfter?.totalPaid} KHR`);
+
+    res.json({
+      success: true,
+      payment: {
+        paymentId: paymentId,
+        previousStatus: 'PENDING',
+        newStatus: 'PAID',
+        approvedAmount: approvedAmount,
+        currency: currency || 'KHR',
+        amountInKHR: amountInKHR
+      },
+      customer: {
+        chatId: payment.chatId,
+        customerName: customerAfter?.customerName,
+        previousTotalPaid: previousTotalPaid,
+        newTotalPaid: customerAfter?.totalPaid || 0,
+        totalExpected: customerAfter?.totalExpected || 0,
+        remainingBalance: customerAfter?.remainingBalance || 0,
+        paymentStatus: customerAfter?.paymentStatus || 'NOT_PAID'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error approving payment:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List all pending payments for review
+app.get('/api/payments/pending', async (req, res) => {
+  try {
+    const pendingPayments = await paymentsCollection.find({
+      paymentLabel: 'PENDING'
+    }).sort({ uploadedAt: -1 }).toArray();
+
+    // Enrich with customer info
+    const enrichedPayments = await Promise.all(pendingPayments.map(async (payment) => {
+      const customer = await customersCollection.findOne({ chatId: payment.chatId });
+      return {
+        ...payment,
+        customer: customer ? {
+          customerName: customer.customerName,
+          totalExpected: customer.totalExpected,
+          totalPaid: customer.totalPaid,
+          remainingBalance: customer.remainingBalance,
+          paymentStatus: customer.paymentStatus
+        } : null
+      };
+    }));
+
+    res.json({
+      count: enrichedPayments.length,
+      payments: enrichedPayments
+    });
+  } catch (error) {
+    console.error('❌ Error fetching pending payments:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get customer payment history with summary
+app.get('/api/customer/:chatId/payments', async (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+
+    const payments = await paymentsCollection.find({
+      chatId: chatId
+    }).sort({ uploadedAt: -1 }).toArray();
+
+    const customer = await customersCollection.findOne({ chatId: chatId });
+
+    // Calculate summary
+    const paidPayments = payments.filter(p => p.paymentLabel === 'PAID');
+    const pendingPayments = payments.filter(p => p.paymentLabel === 'PENDING');
+    const rejectedPayments = payments.filter(p => p.paymentLabel === 'UNPAID');
+
+    res.json({
+      customer: customer || { chatId: chatId, paymentStatus: 'NOT_PAID' },
+      payments: payments,
+      summary: {
+        totalPaid: customer?.totalPaid || 0,
+        totalUnverified: customer?.totalUnverified || 0,
+        totalExpected: customer?.totalExpected || 0,
+        remainingBalance: customer?.remainingBalance || 0,
+        paymentStatus: customer?.paymentStatus || 'NOT_PAID',
+        counts: {
+          paid: paidPayments.length,
+          pending: pendingPayments.length,
+          rejected: rejectedPayments.length,
+          total: payments.length
+        },
+        paidBreakdown: paidPayments.map(p => ({
+          paymentId: p._id,
+          amount: p.amountInKHR,
+          date: p.uploadedAt,
+          transactionId: p.transactionId,
+          manuallyApproved: p.manuallyApproved || false
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error fetching customer payments:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get fraud detection statistics
 app.get('/fraud/stats', async (req, res) => {
   try {
