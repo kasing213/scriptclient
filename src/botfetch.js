@@ -2493,9 +2493,12 @@ RULES:
   }
 }
 
-// ==== Queue System ====
+// ==== Queue System (Rate Limited) ====
 const messageQueue = [];
 let processing = false;
+let lastMessageTime = 0;
+const BOT_MIN_DELAY = parseInt(process.env.BOT_MIN_DELAY_MS) || 1000; // 1 second between messages
+const BOT_MAX_QUEUE = parseInt(process.env.BOT_MAX_QUEUE_SIZE) || 50; // Max queue size
 
 async function setupMessageHandler() {
   bot.on('message', (message) => {
@@ -2503,7 +2506,14 @@ async function setupMessageHandler() {
       return;
     }
 
+    // Prevent queue overflow
+    if (messageQueue.length >= BOT_MAX_QUEUE) {
+      console.log(`⚠️ [QUEUE] Queue full (${BOT_MAX_QUEUE}), dropping message from ${message.chat.id}`);
+      return;
+    }
+
     messageQueue.push(message);
+    console.log(`📥 [QUEUE] Message added. Queue size: ${messageQueue.length}/${BOT_MAX_QUEUE}`);
     processQueue();
   });
 }
@@ -2511,15 +2521,29 @@ async function setupMessageHandler() {
 async function processQueue() {
   if (processing || messageQueue.length === 0) return;
   processing = true;
+
+  // Enforce minimum delay between message processing
+  const now = Date.now();
+  const timeSinceLastMessage = now - lastMessageTime;
+  if (timeSinceLastMessage < BOT_MIN_DELAY && lastMessageTime > 0) {
+    const delayNeeded = BOT_MIN_DELAY - timeSinceLastMessage;
+    console.log(`⏳ [QUEUE] Spacing: waiting ${delayNeeded}ms before next message...`);
+    await new Promise(resolve => setTimeout(resolve, delayNeeded));
+  }
+
+  lastMessageTime = Date.now();
   const message = messageQueue.shift();
+  console.log(`📤 [QUEUE] Processing message. Remaining: ${messageQueue.length}`);
+
   try {
     await handleMessage(message);
   } catch (err) {
     console.error('[QUEUE ERROR]', err);
   }
+
   processing = false;
   if (messageQueue.length > 0) {
-    setTimeout(processQueue, 200);
+    setTimeout(processQueue, 100); // Small delay to check queue again
   }
 }
 
