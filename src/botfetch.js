@@ -1933,20 +1933,7 @@ async function extractKhmerDateWithClaude(imageBuffer) {
           },
           {
             type: "text",
-            text: `Cambodian bank payment screenshot. Extract the transaction DATE and TIME.
-
-KHMER MONTH NAMES (translate to month number):
-មករា=1, កុម្ភៈ=2, មីនា=3, មេសា=4, ឧសភា=5, មិថុនា=6, កក្កដា=7, សីហា=8, កញ្ញា=9, តុលា=10, វិច្ឆិកា=11, ធ្នូ=12
-
-KHMER NUMERALS: ០=0, ១=1, ២=2, ៣=3, ៤=4, ៥=5, ៦=6, ៧=7, ៨=8, ៩=9
-
-Date format is usually: "DAY MONTH_NAME YEAR | HH:MM" (e.g., "៩ មករា ២០២៦ | ០៧:៤៣" = 9 January 2026 07:43)
-
-Return ONLY JSON: {"day":9,"month":1,"year":2026,"hour":7,"minute":43}
-- day: 1-31
-- month: 1-12 (use the mapping above)
-- year: 4-digit (2024, 2025, 2026)
-- hour: 0-23, minute: 0-59`
+            text: `Date only. DD/MM/YYYY HH:MM. If unclear, return: UNCLEAR`
           }
         ]
       }]
@@ -1955,15 +1942,23 @@ Return ONLY JSON: {"day":9,"month":1,"year":2026,"hour":7,"minute":43}
     const responseText = response.content[0].text.trim();
     console.log(`[CLAUDE-OCR] Raw response: ${responseText}`);
 
-    // Parse JSON from response
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const dateData = JSON.parse(jsonMatch[0]);
-      if (dateData.error) {
-        console.log(`[CLAUDE-OCR] Error: ${dateData.error}`);
-        return null;
-      }
-      console.log(`[CLAUDE-OCR] Extracted: day=${dateData.day}, month=${dateData.month}, year=${dateData.year}, time=${dateData.hour}:${dateData.minute}`);
+    // Check for UNCLEAR
+    if (responseText.toUpperCase().includes('UNCLEAR')) {
+      console.log('[CLAUDE-OCR] Date unclear');
+      return null;
+    }
+
+    // Parse DD/MM/YYYY HH:MM format
+    const dateMatch = responseText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+    if (dateMatch) {
+      const dateData = {
+        day: parseInt(dateMatch[1]),
+        month: parseInt(dateMatch[2]),
+        year: parseInt(dateMatch[3]),
+        hour: parseInt(dateMatch[4]),
+        minute: parseInt(dateMatch[5])
+      };
+      console.log(`[CLAUDE-OCR] Extracted: ${dateData.day}/${dateData.month}/${dateData.year} ${dateData.hour}:${dateData.minute}`);
       return dateData;
     }
 
