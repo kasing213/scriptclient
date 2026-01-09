@@ -1966,7 +1966,7 @@ async function extractKhmerDateWithClaude(imageBuffer) {
           },
           {
             type: "text",
-            text: `Month and year only. MM/YYYY. If unclear, return: UNCLEAR`
+            text: `Current month: ${new Date().getMonth() + 1}/${new Date().getFullYear()}. Find transaction month/year. Return MM/YYYY only. If unclear: UNCLEAR`
           }
         ]
       }]
