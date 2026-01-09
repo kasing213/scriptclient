@@ -1845,11 +1845,13 @@ async function logFraudAlert(fraudData) {
   }
 }
 
-// ==== OpenAI Rate Limiter (Enhanced) ====
+// ==== OpenAI Rate Limiter (Enhanced with Sequential Processing) ====
 class OpenAIRateLimiter {
-  constructor(maxRequestsPerMinute = 10) {
+  constructor(maxRequestsPerMinute = 10, minDelayMs = 2000) {
     this.maxRequests = maxRequestsPerMinute;
+    this.minDelay = minDelayMs; // Minimum delay between requests
     this.requests = [];
+    this.lastRequestTime = 0;
     this.queue = [];
     this.processing = false;
   }
@@ -1861,17 +1863,26 @@ class OpenAIRateLimiter {
     // Remove requests older than 1 minute
     this.requests = this.requests.filter(time => time > oneMinuteAgo);
 
+    // Check rate limit per minute
     if (this.requests.length >= this.maxRequests) {
-      // Wait until the oldest request is older than 1 minute
       const oldestRequest = this.requests[0];
-      const waitTime = oldestRequest + 60000 - now + 100; // Add 100ms buffer
+      const waitTime = oldestRequest + 60000 - now + 100;
       console.log(`⏳ Rate limit reached (${this.requests.length}/${this.maxRequests}). Waiting ${Math.ceil(waitTime / 1000)}s...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
-      return this.waitForSlot(); // Retry after waiting
+      return this.waitForSlot();
     }
 
-    this.requests.push(now);
-    console.log(`📊 Rate limiter: ${this.requests.length}/${this.maxRequests} requests in last minute`);
+    // Enforce minimum delay between requests for accurate processing
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < this.minDelay) {
+      const delayNeeded = this.minDelay - timeSinceLastRequest;
+      console.log(`⏳ Spacing requests: waiting ${delayNeeded}ms for accurate OCR...`);
+      await new Promise(resolve => setTimeout(resolve, delayNeeded));
+    }
+
+    this.lastRequestTime = Date.now();
+    this.requests.push(this.lastRequestTime);
+    console.log(`📊 Rate limiter: ${this.requests.length}/${this.maxRequests} requests in last minute (${this.minDelay}ms spacing)`);
   }
 
   getStatus() {
@@ -1881,14 +1892,16 @@ class OpenAIRateLimiter {
     return {
       currentRequests: this.requests.length,
       maxRequests: this.maxRequests,
-      available: this.maxRequests - this.requests.length
+      available: this.maxRequests - this.requests.length,
+      minDelay: this.minDelay
     };
   }
 }
 
 // Rate limiter configuration from environment
 const OCR_RATE_LIMIT = parseInt(process.env.OCR_RATE_LIMIT_PER_MINUTE) || 10;
-const openaiRateLimiter = new OpenAIRateLimiter(OCR_RATE_LIMIT);
+const OCR_MIN_DELAY = parseInt(process.env.OCR_MIN_DELAY_MS) || 2000; // 2 seconds between requests
+const openaiRateLimiter = new OpenAIRateLimiter(OCR_RATE_LIMIT, OCR_MIN_DELAY);
 
 // ==== Retry Logic with Exponential Backoff ====
 async function retryWithBackoff(fn, options = {}) {
