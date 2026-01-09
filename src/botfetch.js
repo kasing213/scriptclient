@@ -5,6 +5,7 @@ const { MongoClient, GridFSBucket } = require('mongodb');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 const { OpenAI } = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
@@ -1897,6 +1898,90 @@ const OCR_RATE_LIMIT = parseInt(process.env.OCR_RATE_LIMIT_PER_MINUTE) || 10;
 const OCR_MIN_DELAY = parseInt(process.env.OCR_MIN_DELAY_MS) || 2000; // 2 seconds between requests
 const openaiRateLimiter = new OpenAIRateLimiter(OCR_RATE_LIMIT, OCR_MIN_DELAY);
 
+// ==== Claude Haiku for Khmer Date OCR ====
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+
+/**
+ * Extract date from bank screenshot using Claude Haiku (better for Khmer script)
+ * @param {Buffer} imageBuffer - Image buffer
+ * @returns {object|null} - { day, month, year, hour, minute } or null
+ */
+async function extractKhmerDateWithClaude(imageBuffer) {
+  if (!anthropic) {
+    console.log('[CLAUDE-OCR] Skipped: ANTHROPIC_API_KEY not set');
+    return null;
+  }
+
+  try {
+    console.log('[CLAUDE-OCR] Extracting date with Claude Haiku...');
+
+    const response = await anthropic.messages.create({
+      model: "claude-3-haiku-20240307",
+      max_tokens: 200,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: imageBuffer.toString('base64')
+            }
+          },
+          {
+            type: "text",
+            text: `Look at this Cambodian bank screenshot. Find the DATE/TIME field (កាលបរិច្ឆេទ or similar).
+
+KHMER NUMERALS: ០=0, ១=1, ២=2org org org org org org org org org org org org org org org org org org org org org org org org org org org org org org
+
+KHMER MONTHS:
+org org org org = January (1)
+org org org org org = February (2)
+org org org org = March (3)
+org org org org = April (4)
+org org org org = May (5)
+org org org org org org = June (6)
+org org org org org = July (7)
+org org org org = August (8)
+org org org org org = September (9)
+org org org org = October (10)
+org org org org org org org = November (11)
+org org org org = December (12)
+
+Extract the date and return ONLY this JSON (no other text):
+{"day":9,"month":1,"year":2026,"hour":7,"minute":43}
+
+If you cannot find a date, return: {"error":"no date found"}`
+          }
+        ]
+      }]
+    });
+
+    const responseText = response.content[0].text.trim();
+    console.log(`[CLAUDE-OCR] Raw response: ${responseText}`);
+
+    // Parse JSON from response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const dateData = JSON.parse(jsonMatch[0]);
+      if (dateData.error) {
+        console.log(`[CLAUDE-OCR] Error: ${dateData.error}`);
+        return null;
+      }
+      console.log(`[CLAUDE-OCR] Extracted: day=${dateData.day}, month=${dateData.month}, year=${dateData.year}, time=${dateData.hour}:${dateData.minute}`);
+      return dateData;
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`[CLAUDE-OCR] Error: ${error.message}`);
+    return null;
+  }
+}
+
 // ==== Retry Logic with Exponential Backoff ====
 async function retryWithBackoff(fn, options = {}) {
   const {
@@ -2156,25 +2241,44 @@ RULES:
       };
     }
 
-    // Construct transactionDate from separate date fields (more accurate for Khmer)
-    if (paymentData.dateYear && paymentData.dateMonth && paymentData.dateDay) {
+    // Use Claude Haiku for accurate Khmer date extraction (GPT-4 is unreliable for Khmer)
+    const claudeDate = await extractKhmerDateWithClaude(imageBuffer);
+
+    if (claudeDate && claudeDate.year && claudeDate.month && claudeDate.day) {
+      const year = parseInt(claudeDate.year);
+      const month = parseInt(claudeDate.month);
+      const day = parseInt(claudeDate.day);
+      const hour = parseInt(claudeDate.hour) || 0;
+      const minute = parseInt(claudeDate.minute) || 0;
+
+      // Validate date components
+      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        const date = new Date(year, month - 1, day, hour, minute);
+        paymentData.transactionDate = date.toISOString();
+        console.log(`📅 [DATE] Claude Haiku: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
+      } else {
+        console.log(`⚠️ [DATE] Invalid Claude components: year=${year}, month=${month}, day=${day}`);
+        paymentData.transactionDate = null;
+      }
+    } else if (paymentData.dateYear && paymentData.dateMonth && paymentData.dateDay) {
+      // Fallback to GPT-4 date fields if Claude fails
       const year = parseInt(paymentData.dateYear);
       const month = parseInt(paymentData.dateMonth);
       const day = parseInt(paymentData.dateDay);
       const hour = parseInt(paymentData.dateHour) || 0;
       const minute = parseInt(paymentData.dateMinute) || 0;
 
-      // Validate date components
       if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
         const date = new Date(year, month - 1, day, hour, minute);
         paymentData.transactionDate = date.toISOString();
-        console.log(`📅 [DATE] Constructed from fields: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
+        console.log(`📅 [DATE] GPT-4 fallback: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
       } else {
-        console.log(`⚠️ [DATE] Invalid components: year=${year}, month=${month}, day=${day}`);
+        console.log(`⚠️ [DATE] Invalid GPT-4 components: year=${year}, month=${month}, day=${day}`);
         paymentData.transactionDate = null;
       }
-    } else if (!paymentData.transactionDate) {
-      console.log(`⚠️ [DATE] No date fields returned from OCR`);
+    } else {
+      console.log(`⚠️ [DATE] No date extracted from Claude or GPT-4`);
+      paymentData.transactionDate = null;
     }
 
     // Convert payment to KHR for verification
