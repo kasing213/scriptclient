@@ -1495,21 +1495,7 @@ function parseEnglishDate(dateStr) {
     console.log(`[ENGLISH] Split by pipe: date="${datePart}", time="${timePart}"`);
   }
 
-  // Try direct parsing first (handles ISO and common formats)
-  const direct = new Date(datePart);
-  if (!isNaN(direct.getTime())) {
-    // Add time if present
-    if (timePart) {
-      const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
-      if (timeMatch) {
-        direct.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
-      }
-    }
-    console.log(`[ENGLISH] Direct parse success: ${direct.toISOString()}`);
-    return direct;
-  }
-
-  // Try "DD Month YYYY" format (e.g., "8 January 2026")
+  // Month name mapping - MUST check before native Date() which parses incorrectly
   const ENGLISH_MONTHS = {
     'january': 0, 'february': 1, 'march': 2, 'april': 3,
     'may': 4, 'june': 5, 'july': 6, 'august': 7,
@@ -1518,6 +1504,7 @@ function parseEnglishDate(dateStr) {
     'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
   };
 
+  // Try "DD Month YYYY" format FIRST (e.g., "8 January 2026")
   const ddMonthYYYY = datePart.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/i);
   if (ddMonthYYYY) {
     const day = parseInt(ddMonthYYYY[1]);
@@ -1534,9 +1521,23 @@ function parseEnglishDate(dateStr) {
           date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
         }
       }
-      console.log(`[ENGLISH] DD Month YYYY parse: ${date.toISOString()}`);
+      console.log(`[ENGLISH] DD Month YYYY: day=${day}, month=${monthName}(${month}), year=${year} → ${date.toISOString()}`);
       return date;
     }
+  }
+
+  // Try direct parsing for ISO format (e.g., "2026-01-08T10:04:00")
+  const direct = new Date(datePart);
+  if (!isNaN(direct.getTime())) {
+    // Add time if present
+    if (timePart) {
+      const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        direct.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
+      }
+    }
+    console.log(`[ENGLISH] Direct parse: ${direct.toISOString()}`);
+    return direct;
   }
 
   // Try DD/MM/YYYY or DD-MM-YYYY format (common in Cambodia)
