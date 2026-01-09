@@ -1958,7 +1958,7 @@ Extract ALL fields carefully:
 - toAccount: The recipient account number (CRITICAL for security)
 - amount: The transfer amount (use POSITIVE number, ignore minus sign)
 - transactionId: The Trx. ID or Transaction ID
-- transactionDate: Extract date/time. Convert to ISO format (2026-01-04T13:35:00) if possible. If the date is in Khmer script with Khmer numerals or month names, extract as-is - our parser handles Khmer dates.
+- transactionDate: CRITICAL - If the date contains ANY Khmer characters (org org org org, org org org org, etc.), DO NOT translate or convert. Return EXACTLY as shown on screen (e.g. "org org org org org org org org | org org:org org"). Only use ISO format if date is already in English/numbers.
 
 Return JSON format:
 {
@@ -1971,7 +1971,7 @@ Return JSON format:
   "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
   "bankName": "string",
-  "transactionDate": "string (ISO format preferred, or Khmer format if visible)",
+  "transactionDate": "string (EXACT as shown - if Khmer, keep Khmer characters)",
   "remark": "string",
   "recipientName": "string",
   "confidence": "high/medium/low"
