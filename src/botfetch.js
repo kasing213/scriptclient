@@ -2079,14 +2079,13 @@ Extract ALL fields carefully:
   * ABA: Read the main amount after minus sign (e.g., "-28,000 KHR" → 28000)
   * Remove commas, return as number (34,000 → 34000)
 - transactionId: The Trx. ID or Transaction ID
-- transactionDate: MUST return STRICT ISO format: "YYYY-MM-DDTHH:MM"
-  Use Khmer numeral chart above. ALWAYS format as:
-  * YYYY = 4-digit year (2024, 2025, 2026)
-  * MM = 2-digit month (01-12)
-  * DD = 2-digit day (01-31)
-  * HH:MM = time in 24h format
-  Example: Screen shows "org org org org org org org org org org | org org:org org" → return "2026-01-09T14:12"
-  NEVER use DD-MM-YYYY or MM-DD-YYYY. ONLY "YYYY-MM-DDTHH:MM"
+- DATE FIELDS: Return date as SEPARATE components (more accurate for Khmer):
+  Use the Khmer numeral and month charts above carefully.
+  * dateDay: The day number (1-31)
+  * dateMonth: The month number (1-12). Use chart: មករorg org org org=1, កorg org org org org org org org=2, org org org org org org org org=3, org org org org org org org org=4, org org org org org org org org=5, org org org org org org org org org org=6, org org org org org org org org org org=7, org org org org org org org org=8, org org org org org org org org=9, org org org org org org org org=10, org org org org org org org org org org org org org org=11, org org org org org org org org=12
+  * dateYear: The 4-digit year (2024, 2025, 2026)
+  * dateHour: Hour (0-23)
+  * dateMinute: Minute (0-59)
 
 Return JSON format:
 {
@@ -2099,7 +2098,11 @@ Return JSON format:
   "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
   "bankName": "string",
-  "transactionDate": "YYYY-MM-DDTHH:MM (e.g., 2026-01-09T14:12)",
+  "dateDay": number (1-31),
+  "dateMonth": number (1-12),
+  "dateYear": number (2024-2026),
+  "dateHour": number (0-23),
+  "dateMinute": number (0-59),
   "remark": "string",
   "recipientName": "string",
   "confidence": "high/medium/low"
@@ -2151,6 +2154,27 @@ RULES:
         confidence: 'low',
         rawResponse: aiResponse
       };
+    }
+
+    // Construct transactionDate from separate date fields (more accurate for Khmer)
+    if (paymentData.dateYear && paymentData.dateMonth && paymentData.dateDay) {
+      const year = parseInt(paymentData.dateYear);
+      const month = parseInt(paymentData.dateMonth);
+      const day = parseInt(paymentData.dateDay);
+      const hour = parseInt(paymentData.dateHour) || 0;
+      const minute = parseInt(paymentData.dateMinute) || 0;
+
+      // Validate date components
+      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        const date = new Date(year, month - 1, day, hour, minute);
+        paymentData.transactionDate = date.toISOString();
+        console.log(`📅 [DATE] Constructed from fields: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
+      } else {
+        console.log(`⚠️ [DATE] Invalid components: year=${year}, month=${month}, day=${day}`);
+        paymentData.transactionDate = null;
+      }
+    } else if (!paymentData.transactionDate) {
+      console.log(`⚠️ [DATE] No date fields returned from OCR`);
     }
 
     // Convert payment to KHR for verification
