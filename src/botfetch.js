@@ -2076,7 +2076,14 @@ If you read a year like 2022 or 2023, RECHECK each digit against the chart above
 STEP 3: EXTRACT PAYMENT DATA (only if isPaid=TRUE)
 Extract ALL fields carefully:
 - toAccount: The recipient account number (CRITICAL for security)
-- amount: The transfer amount (use POSITIVE number, ignore minus sign)
+- amount: CRITICAL - Read the MAIN/HEADER amount (large text, usually colored/highlighted):
+  * Look for the PRIMARY amount displayed prominently (e.g., "34,000 org" in header)
+  * DO NOT calculate or convert from USD to KHR yourself
+  * If screen shows both USD and KHR, use the KHR amount displayed
+  * If only USD shown, return USD amount and set currency="USD"
+  * ACLEDA: Read the green header amount (e.g., "34,000 org")
+  * ABA: Read the main amount after minus sign (e.g., "-28,000 KHR" → 28000)
+  * Remove commas, return as number (34,000 → 34000)
 - transactionId: The Trx. ID or Transaction ID
 - transactionDate: CRITICAL - Read Khmer dates using the reference chart above.
   Step 1: Match each Khmer numeral to the chart (០១២៣៤៥៦៧៨៩ = 0-9)
@@ -2089,7 +2096,7 @@ Return JSON format:
 {
   "isBankStatement": true/false,
   "isPaid": true/false,
-  "amount": number (POSITIVE, e.g., 28000 not -28000),
+  "amount": number (HEADER amount, POSITIVE, no commas: 34000 not 33840),
   "currency": "KHR" or "USD",
   "transactionId": "string",
   "referenceNumber": "string",
