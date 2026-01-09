@@ -1918,7 +1918,7 @@ async function extractKhmerDateWithClaude(imageBuffer) {
     console.log('[CLAUDE-OCR] Extracting date with Claude Haiku...');
 
     const response = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
+      model: "claude-3-5-haiku-latest",
       max_tokens: 200,
       messages: [{
         role: "user",
@@ -1933,28 +1933,20 @@ async function extractKhmerDateWithClaude(imageBuffer) {
           },
           {
             type: "text",
-            text: `Look at this Cambodian bank screenshot. Find the DATE/TIME field (កាលបរិច្ឆេទ or similar).
+            text: `Cambodian bank payment screenshot. Extract the transaction DATE and TIME.
 
-KHMER NUMERALS: ០=0, ១=1, ២=2org org org org org org org org org org org org org org org org org org org org org org org org org org org org org org
+KHMER MONTH NAMES (translate to month number):
+មករា=1, កុម្ភៈ=2, មីនា=3, មេសា=4, ឧសភា=5, មិថុនា=6, កក្កដា=7, សីហា=8, កញ្ញា=9, តុលា=10, វិច្ឆិកា=11, ធ្នូ=12
 
-KHMER MONTHS:
-org org org org = January (1)
-org org org org org = February (2)
-org org org org = March (3)
-org org org org = April (4)
-org org org org = May (5)
-org org org org org org = June (6)
-org org org org org = July (7)
-org org org org = August (8)
-org org org org org = September (9)
-org org org org = October (10)
-org org org org org org org = November (11)
-org org org org = December (12)
+KHMER NUMERALS: ០=0, ១=1, ២=2, ៣=3, ៤=4, ៥=5, ៦=6, ៧=7, ៨=8, ៩=9
 
-Extract the date and return ONLY this JSON (no other text):
-{"day":9,"month":1,"year":2026,"hour":7,"minute":43}
+Date format is usually: "DAY MONTH_NAME YEAR | HH:MM" (e.g., "៩ មករា ២០២៦ | ០៧:៤៣" = 9 January 2026 07:43)
 
-If you cannot find a date, return: {"error":"no date found"}`
+Return ONLY JSON: {"day":9,"month":1,"year":2026,"hour":7,"minute":43}
+- day: 1-31
+- month: 1-12 (use the mapping above)
+- year: 4-digit (2024, 2025, 2026)
+- hour: 0-23, minute: 0-59`
           }
         ]
       }]
