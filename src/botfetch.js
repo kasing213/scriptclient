@@ -1710,7 +1710,7 @@ function parseKhmerDate(dateStr) {
  * @param {number} maxAgeDays - Maximum allowed age in days
  * @returns {object} - { isValid, fraudType, ageDays, parsedDate, reason }
  */
-function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7) {
+function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7, paymentData = null) {
   const result = {
     isValid: true,
     fraudType: null,
@@ -1727,13 +1727,46 @@ function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7)
     return result;
   }
 
-  // Check 2: Parse transaction date (supports both English and Khmer formats)
+  // NEW: Month/Year only validation (more reliable for Khmer dates)
+  // If we have transactionMonth and transactionYear from Claude/GPT-4, use those
+  if (paymentData && paymentData.transactionMonth && paymentData.transactionYear) {
+    const txMonth = paymentData.transactionMonth;
+    const txYear = paymentData.transactionYear;
+    const currentMonth = uploadedAt.getMonth() + 1; // 1-12
+    const currentYear = uploadedAt.getFullYear();
+
+    console.log(`📅 Validating month/year: ${txMonth}/${txYear} vs current ${currentMonth}/${currentYear}`);
+
+    // Calculate months difference
+    const monthsDiff = (currentYear - txYear) * 12 + (currentMonth - txMonth);
+
+    // Allow current month and previous month only
+    if (monthsDiff < 0) {
+      result.isValid = false;
+      result.fraudType = 'FUTURE_DATE';
+      result.reason = `Transaction date ${txMonth}/${txYear} is in the future`;
+      return result;
+    }
+
+    if (monthsDiff > 1) {
+      result.isValid = false;
+      result.fraudType = 'OLD_SCREENSHOT';
+      result.ageDays = monthsDiff * 30; // Approximate
+      result.reason = `Screenshot is from ${txMonth}/${txYear} (${monthsDiff} months old)`;
+      return result;
+    }
+
+    // Valid: same month or previous month
+    result.parsedDate = new Date(txYear, txMonth - 1, 1);
+    result.ageDays = monthsDiff * 30;
+    return result;
+  }
+
+  // Fallback: Parse full date if month/year not available
   let transactionDate;
   try {
-    // Use parseKhmerDate which handles both English ISO and Khmer date formats
     transactionDate = parseKhmerDate(transactionDateStr);
 
-    // Check if date is valid
     if (!transactionDate || isNaN(transactionDate.getTime())) {
       result.isValid = false;
       result.fraudType = 'INVALID_DATE';
@@ -1750,17 +1783,17 @@ function validateTransactionDate(transactionDateStr, uploadedAt, maxAgeDays = 7)
     return result;
   }
 
-  // Check 3: Future date detection
+  // Future date check
   if (transactionDate > uploadedAt) {
     const futureDays = Math.ceil((transactionDate - uploadedAt) / (1000 * 60 * 60 * 24));
     result.isValid = false;
     result.fraudType = 'FUTURE_DATE';
-    result.ageDays = -futureDays; // Negative to indicate future
+    result.ageDays = -futureDays;
     result.reason = `Transaction date is ${futureDays} days in the future`;
     return result;
   }
 
-  // Check 4: Old screenshot detection
+  // Old screenshot check
   const ageDays = (uploadedAt - transactionDate) / (1000 * 60 * 60 * 24);
   result.ageDays = Math.floor(ageDays);
 
@@ -1933,7 +1966,7 @@ async function extractKhmerDateWithClaude(imageBuffer) {
           },
           {
             type: "text",
-            text: `Date only. DD/MM/YYYY HH:MM. If unclear, return: UNCLEAR`
+            text: `Month and year only. MM/YYYY. If unclear, return: UNCLEAR`
           }
         ]
       }]
@@ -1948,17 +1981,14 @@ async function extractKhmerDateWithClaude(imageBuffer) {
       return null;
     }
 
-    // Parse DD/MM/YYYY HH:MM format
-    const dateMatch = responseText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+    // Parse MM/YYYY format
+    const dateMatch = responseText.match(/(\d{1,2})\/(\d{4})/);
     if (dateMatch) {
       const dateData = {
-        day: parseInt(dateMatch[1]),
-        month: parseInt(dateMatch[2]),
-        year: parseInt(dateMatch[3]),
-        hour: parseInt(dateMatch[4]),
-        minute: parseInt(dateMatch[5])
+        month: parseInt(dateMatch[1]),
+        year: parseInt(dateMatch[2])
       };
-      console.log(`[CLAUDE-OCR] Extracted: ${dateData.day}/${dateData.month}/${dateData.year} ${dateData.hour}:${dateData.minute}`);
+      console.log(`[CLAUDE-OCR] Extracted: ${dateData.month}/${dateData.year}`);
       return dateData;
     }
 
@@ -2231,36 +2261,35 @@ RULES:
     // Use Claude Haiku for accurate Khmer date extraction (GPT-4 is unreliable for Khmer)
     const claudeDate = await extractKhmerDateWithClaude(imageBuffer);
 
-    if (claudeDate && claudeDate.year && claudeDate.month && claudeDate.day) {
+    if (claudeDate && claudeDate.year && claudeDate.month) {
       const year = parseInt(claudeDate.year);
       const month = parseInt(claudeDate.month);
-      const day = parseInt(claudeDate.day);
-      const hour = parseInt(claudeDate.hour) || 0;
-      const minute = parseInt(claudeDate.minute) || 0;
 
-      // Validate date components
-      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        const date = new Date(year, month - 1, day, hour, minute);
+      // Validate month/year only (day is unreliable with Khmer OCR)
+      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12) {
+        // Store month/year for validation, use day 1 as placeholder
+        const date = new Date(year, month - 1, 1, 0, 0);
         paymentData.transactionDate = date.toISOString();
-        console.log(`📅 [DATE] Claude Haiku: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
+        paymentData.transactionMonth = month;
+        paymentData.transactionYear = year;
+        console.log(`📅 [DATE] Claude Haiku: ${month}/${year} → ${paymentData.transactionDate}`);
       } else {
-        console.log(`⚠️ [DATE] Invalid Claude components: year=${year}, month=${month}, day=${day}`);
+        console.log(`⚠️ [DATE] Invalid Claude components: year=${year}, month=${month}`);
         paymentData.transactionDate = null;
       }
-    } else if (paymentData.dateYear && paymentData.dateMonth && paymentData.dateDay) {
-      // Fallback to GPT-4 date fields if Claude fails
+    } else if (paymentData.dateYear && paymentData.dateMonth) {
+      // Fallback to GPT-4 date fields if Claude fails (month/year only)
       const year = parseInt(paymentData.dateYear);
       const month = parseInt(paymentData.dateMonth);
-      const day = parseInt(paymentData.dateDay);
-      const hour = parseInt(paymentData.dateHour) || 0;
-      const minute = parseInt(paymentData.dateMinute) || 0;
 
-      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        const date = new Date(year, month - 1, day, hour, minute);
+      if (year >= 2020 && year <= 2030 && month >= 1 && month <= 12) {
+        const date = new Date(year, month - 1, 1, 0, 0);
         paymentData.transactionDate = date.toISOString();
-        console.log(`📅 [DATE] GPT-4 fallback: ${day}/${month}/${year} ${hour}:${minute} → ${paymentData.transactionDate}`);
+        paymentData.transactionMonth = month;
+        paymentData.transactionYear = year;
+        console.log(`📅 [DATE] GPT-4 fallback: ${month}/${year} → ${paymentData.transactionDate}`);
       } else {
-        console.log(`⚠️ [DATE] Invalid GPT-4 components: year=${year}, month=${month}, day=${day}`);
+        console.log(`⚠️ [DATE] Invalid GPT-4 components: year=${year}, month=${month}`);
         paymentData.transactionDate = null;
       }
     } else {
@@ -2375,7 +2404,8 @@ RULES:
       const dateValidation = validateTransactionDate(
         paymentData.transactionDate,
         new Date(), // uploadedAt
-        MAX_SCREENSHOT_AGE_DAYS
+        MAX_SCREENSHOT_AGE_DAYS,
+        paymentData // Pass paymentData for month/year validation
       );
 
       // Only flag fraud for OLD_SCREENSHOT (date is readable but too old)
