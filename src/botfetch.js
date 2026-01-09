@@ -1899,8 +1899,8 @@ const OCR_MIN_DELAY = parseInt(process.env.OCR_MIN_DELAY_MS) || 2000; // 2 secon
 const openaiRateLimiter = new OpenAIRateLimiter(OCR_RATE_LIMIT, OCR_MIN_DELAY);
 
 // ==== Claude Haiku for Khmer Date OCR ====
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY })
+const anthropic = process.env.CLAUDE_API_KEY
+  ? new Anthropic.default({ apiKey: process.env.CLAUDE_API_KEY })
   : null;
 
 /**
@@ -1910,7 +1910,7 @@ const anthropic = process.env.ANTHROPIC_API_KEY
  */
 async function extractKhmerDateWithClaude(imageBuffer) {
   if (!anthropic) {
-    console.log('[CLAUDE-OCR] Skipped: ANTHROPIC_API_KEY not set');
+    console.log('[CLAUDE-OCR] Skipped: CLAUDE_API_KEY not set');
     return null;
   }
 
