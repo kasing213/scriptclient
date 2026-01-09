@@ -1333,11 +1333,39 @@ function buildVerificationMessage(paymentData, expectedAmount, amountInKHR, isVe
 
 // ==== Fraud Detection Helper Functions ====
 
-// Khmer numeral to Arabic numeral mapping
+// Khmer numeral to Arabic numeral mapping (extended to handle various Unicode representations)
 const KHMER_NUMERALS = {
+  // Standard Khmer digits (U+17E0-U+17E9)
   '០': '0', '១': '1', '២': '2', '៣': '3', '៤': '4',
-  '៥': '5', '៦': '6', '៧': '7', '៨': '8', '៩': '9'
+  '៥': '5', '៦': '6', '៧': '7', '៨': '8', '៩': '9',
+  // Thai digits (U+0E50-U+0E59) - visually similar, GPT-4 may confuse
+  '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
+  '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9',
+  // Lao digits (U+0ED0-U+0ED9) - similar script family
+  '໐': '0', '໑': '1', '໒': '2', '໓': '3', '໔': '4',
+  '໕': '5', '໖': '6', '໗': '7', '໘': '8', '໙': '9',
+  // Myanmar digits (U+1040-U+1049)
+  '၀': '0', '၁': '1', '၂': '2', '၃': '3', '၄': '4',
+  '၅': '5', '၆': '6', '၇': '7', '၈': '8', '၉': '9',
+  // Fullwidth digits (U+FF10-U+FF19)
+  '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
+  '５': '5', '６': '6', '７': '7', '８': '8', '９': '9'
 };
+
+/**
+ * Debug function to log Unicode character codes
+ * @param {string} str - String to analyze
+ * @param {string} label - Label for the log
+ */
+function debugCharCodes(str, label = 'DEBUG') {
+  if (!str) return;
+  const chars = [...str];
+  const charInfo = chars.map(char => {
+    const code = char.codePointAt(0);
+    return `"${char}"=U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
+  }).join(' ');
+  console.log(`[${label}] ${charInfo}`);
+}
 
 // Khmer month names to month number (1-12)
 const KHMER_MONTHS = {
@@ -1378,10 +1406,26 @@ const KHMER_MONTHS_ALT = {
  */
 function convertKhmerNumerals(str) {
   if (!str) return str;
+
+  // Debug: Log input character codes to identify unknown numerals
+  debugCharCodes(str, 'NUMERAL-INPUT');
+
   let result = str;
   for (const [khmer, arabic] of Object.entries(KHMER_NUMERALS)) {
     result = result.replace(new RegExp(khmer, 'g'), arabic);
   }
+
+  // Check if conversion happened
+  if (result !== str) {
+    console.log(`[NUMERAL-CONVERT] "${str}" → "${result}"`);
+  } else {
+    // If no conversion, log warning - might have unknown characters
+    const hasNonAsciiDigits = /[^\x00-\x7F0-9\s]/.test(str);
+    if (hasNonAsciiDigits) {
+      console.log(`[NUMERAL-WARN] No conversion for: "${str}" - may contain unmapped characters`);
+    }
+  }
+
   return result;
 }
 
