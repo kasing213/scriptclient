@@ -1485,17 +1485,34 @@ function containsKhmerScript(str) {
 function parseEnglishDate(dateStr) {
   if (!dateStr) return null;
 
-  // Handle pipe separator (e.g., "8 January 2026 | 10:04")
+  console.log(`[DATE-PARSE] Input: "${dateStr}"`);
+
+  // 1. Try ISO format FIRST: "YYYY-MM-DDTHH:MM" (expected from GPT-4)
+  const isoMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1]);
+    const month = parseInt(isoMatch[2]) - 1; // JS months are 0-indexed
+    const day = parseInt(isoMatch[3]);
+    const hour = isoMatch[4] ? parseInt(isoMatch[4]) : 0;
+    const minute = isoMatch[5] ? parseInt(isoMatch[5]) : 0;
+
+    if (year >= 2020 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      const date = new Date(year, month, day, hour, minute);
+      console.log(`[DATE-PARSE] ISO format: ${year}-${month+1}-${day} ${hour}:${minute} → ${date.toISOString()}`);
+      return date;
+    }
+  }
+
+  // 2. Handle pipe separator (legacy: "8 January 2026 | 10:04")
   let datePart = dateStr;
   let timePart = null;
   if (dateStr.includes('|')) {
     const parts = dateStr.split('|').map(p => p.trim());
     datePart = parts[0];
     timePart = parts[1];
-    console.log(`[ENGLISH] Split by pipe: date="${datePart}", time="${timePart}"`);
   }
 
-  // Month name mapping - MUST check before native Date() which parses incorrectly
+  // 3. Try "DD Month YYYY" format (e.g., "8 January 2026")
   const ENGLISH_MONTHS = {
     'january': 0, 'february': 1, 'march': 2, 'april': 3,
     'may': 4, 'june': 5, 'july': 6, 'august': 7,
@@ -1504,7 +1521,6 @@ function parseEnglishDate(dateStr) {
     'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
   };
 
-  // Try "DD Month YYYY" format FIRST (e.g., "8 January 2026")
   const ddMonthYYYY = datePart.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/i);
   if (ddMonthYYYY) {
     const day = parseInt(ddMonthYYYY[1]);
@@ -1514,51 +1530,29 @@ function parseEnglishDate(dateStr) {
 
     if (month !== undefined && day >= 1 && day <= 31 && year >= 2020) {
       const date = new Date(year, month, day);
-      // Add time if present
       if (timePart) {
         const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
-        if (timeMatch) {
-          date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
-        }
+        if (timeMatch) date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
       }
-      console.log(`[ENGLISH] DD Month YYYY: day=${day}, month=${monthName}(${month}), year=${year} → ${date.toISOString()}`);
+      console.log(`[DATE-PARSE] DD Month YYYY: ${day} ${monthName} ${year} → ${date.toISOString()}`);
       return date;
     }
   }
 
-  // Try direct parsing for ISO format (e.g., "2026-01-08T10:04:00")
-  const direct = new Date(datePart);
-  if (!isNaN(direct.getTime())) {
-    // Add time if present
-    if (timePart) {
-      const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
-      if (timeMatch) {
-        direct.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
-      }
-    }
-    console.log(`[ENGLISH] Direct parse: ${direct.toISOString()}`);
-    return direct;
-  }
-
-  // Try DD/MM/YYYY or DD-MM-YYYY format (common in Cambodia)
-  const ddmmyyyy = datePart.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  // 4. Try DD/MM/YYYY format (Cambodia standard)
+  const ddmmyyyy = datePart.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   if (ddmmyyyy) {
     let day = parseInt(ddmmyyyy[1]);
     let month = parseInt(ddmmyyyy[2]);
-    let year = parseInt(ddmmyyyy[3]);
-    if (year < 100) year += 2000;
+    const year = parseInt(ddmmyyyy[3]);
 
-    // Swap if month > 12 (must be DD/MM/YYYY format)
-    if (month > 12 && day <= 12) {
-      [day, month] = [month, day];
-    }
+    // Swap if month > 12 (must be DD/MM/YYYY)
+    if (month > 12 && day <= 12) [day, month] = [month, day];
 
     if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2020) {
       const date = new Date(year, month - 1, day);
-      if (!isNaN(date.getTime())) {
-        console.log(`[ENGLISH] DD/MM/YYYY parse: ${date.toISOString()}`);
-        return date;
-      }
+      console.log(`[DATE-PARSE] DD/MM/YYYY: ${day}/${month}/${year} → ${date.toISOString()}`);
+      return date;
     }
   }
 
@@ -2085,12 +2079,14 @@ Extract ALL fields carefully:
   * ABA: Read the main amount after minus sign (e.g., "-28,000 KHR" → 28000)
   * Remove commas, return as number (34,000 → 34000)
 - transactionId: The Trx. ID or Transaction ID
-- transactionDate: CRITICAL - Read Khmer dates using the reference chart above.
-  Step 1: Match each Khmer numeral to the chart (០១២៣៤៥៦៧៨៩ = 0-9)
-  Step 2: Identify the Khmer month name from the list
-  Step 3: Return in format: "DD MonthName YYYY | HH:MM" using ARABIC numerals
-  Example: "org org org org org org | org org:org org" on screen → return "8 April 2025 | 10:04"
-  If date is already in English/Arabic numerals, return as-is.
+- transactionDate: MUST return STRICT ISO format: "YYYY-MM-DDTHH:MM"
+  Use Khmer numeral chart above. ALWAYS format as:
+  * YYYY = 4-digit year (2024, 2025, 2026)
+  * MM = 2-digit month (01-12)
+  * DD = 2-digit day (01-31)
+  * HH:MM = time in 24h format
+  Example: Screen shows "org org org org org org org org org org | org org:org org" → return "2026-01-09T14:12"
+  NEVER use DD-MM-YYYY or MM-DD-YYYY. ONLY "YYYY-MM-DDTHH:MM"
 
 Return JSON format:
 {
@@ -2103,7 +2099,7 @@ Return JSON format:
   "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
   "bankName": "string",
-  "transactionDate": "string (converted to Arabic numerals: '8 April 2025 | 10:04')",
+  "transactionDate": "YYYY-MM-DDTHH:MM (e.g., 2026-01-09T14:12)",
   "remark": "string",
   "recipientName": "string",
   "confidence": "high/medium/low"
