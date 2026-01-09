@@ -1997,12 +1997,32 @@ Set isPaid=FALSE but keep isBankStatement=TRUE if:
 - Image is cropped/partial - missing key fields
 - Shows "Pending", "Failed", or "Processing" status
 
+KHMER NUMERAL REFERENCE (CRITICAL - use this to read dates accurately):
+០ = 0    ១ = 1    ២ = 2    ៣ = 3    ៤ = 4
+៥ = 5    ៦ = 6    ៧ = 7    ៨ = 8    ៩ = 9
+
+KHMER MONTHS:
+មករា = January (1)      កុម្ភៈ = February (2)
+មីនា = March (3)        មេសា = April (4)
+ឧសភា = May (5)          មិថុនា = June (6)
+កក្កដា = July (7)       សីហា = August (8)
+កញ្ញា = September (9)   តុលា = October (10)
+វិច្ឆិកា = November (11) ធ្នូ = December (12)
+
+YEAR VALIDATION: Current year is 2026. Bank screenshots should show 2024-2026.
+If you read a year like 2022 or 2023, RECHECK each digit against the chart above!
+
 STEP 3: EXTRACT PAYMENT DATA (only if isPaid=TRUE)
 Extract ALL fields carefully:
 - toAccount: The recipient account number (CRITICAL for security)
 - amount: The transfer amount (use POSITIVE number, ignore minus sign)
 - transactionId: The Trx. ID or Transaction ID
-- transactionDate: CRITICAL - If the date contains ANY Khmer characters (org org org org, org org org org, etc.), DO NOT translate or convert. Return EXACTLY as shown on screen (e.g. "org org org org org org org org | org org:org org"). Only use ISO format if date is already in English/numbers.
+- transactionDate: CRITICAL - Read Khmer dates using the reference chart above.
+  Step 1: Match each Khmer numeral to the chart (០១២៣៤៥៦៧៨៩ = 0-9)
+  Step 2: Identify the Khmer month name from the list
+  Step 3: Return in format: "DD MonthName YYYY | HH:MM" using ARABIC numerals
+  Example: "org org org org org org | org org:org org" on screen → return "8 April 2025 | 10:04"
+  If date is already in English/Arabic numerals, return as-is.
 
 Return JSON format:
 {
@@ -2015,7 +2035,7 @@ Return JSON format:
   "fromAccount": "string (sender account/name)",
   "toAccount": "string (recipient account number)",
   "bankName": "string",
-  "transactionDate": "string (EXACT as shown - if Khmer, keep Khmer characters)",
+  "transactionDate": "string (converted to Arabic numerals: '8 April 2025 | 10:04')",
   "remark": "string",
   "recipientName": "string",
   "confidence": "high/medium/low"
