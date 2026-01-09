@@ -1966,7 +1966,13 @@ async function extractKhmerDateWithClaude(imageBuffer) {
           },
           {
             type: "text",
-            text: `Current month: ${new Date().getMonth() + 1}/${new Date().getFullYear()}. Find transaction month/year. Return MM/YYYY only. If unclear: UNCLEAR`
+            text: (() => {
+              const now = new Date();
+              const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+              const currentMonth = monthNames[now.getMonth()];
+              const currentYear = now.getFullYear();
+              return `Khmer bank screenshot. Current date is ${currentMonth} ${currentYear}. Find the transaction MONTH and YEAR in Khmer script. The month is likely ${currentMonth} (month ${now.getMonth() + 1}). Return MM/YYYY only. If unclear: UNCLEAR`;
+            })()
           }
         ]
       }]
