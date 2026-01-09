@@ -1485,15 +1485,62 @@ function containsKhmerScript(str) {
 function parseEnglishDate(dateStr) {
   if (!dateStr) return null;
 
+  // Handle pipe separator (e.g., "8 January 2026 | 10:04")
+  let datePart = dateStr;
+  let timePart = null;
+  if (dateStr.includes('|')) {
+    const parts = dateStr.split('|').map(p => p.trim());
+    datePart = parts[0];
+    timePart = parts[1];
+    console.log(`[ENGLISH] Split by pipe: date="${datePart}", time="${timePart}"`);
+  }
+
   // Try direct parsing first (handles ISO and common formats)
-  const direct = new Date(dateStr);
+  const direct = new Date(datePart);
   if (!isNaN(direct.getTime())) {
+    // Add time if present
+    if (timePart) {
+      const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        direct.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
+      }
+    }
     console.log(`[ENGLISH] Direct parse success: ${direct.toISOString()}`);
     return direct;
   }
 
+  // Try "DD Month YYYY" format (e.g., "8 January 2026")
+  const ENGLISH_MONTHS = {
+    'january': 0, 'february': 1, 'march': 2, 'april': 3,
+    'may': 4, 'june': 5, 'july': 6, 'august': 7,
+    'september': 8, 'october': 9, 'november': 10, 'december': 11,
+    'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'jun': 5,
+    'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
+  };
+
+  const ddMonthYYYY = datePart.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/i);
+  if (ddMonthYYYY) {
+    const day = parseInt(ddMonthYYYY[1]);
+    const monthName = ddMonthYYYY[2].toLowerCase();
+    const year = parseInt(ddMonthYYYY[3]);
+    const month = ENGLISH_MONTHS[monthName];
+
+    if (month !== undefined && day >= 1 && day <= 31 && year >= 2020) {
+      const date = new Date(year, month, day);
+      // Add time if present
+      if (timePart) {
+        const timeMatch = timePart.match(/(\d{1,2}):(\d{2})/);
+        if (timeMatch) {
+          date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]));
+        }
+      }
+      console.log(`[ENGLISH] DD Month YYYY parse: ${date.toISOString()}`);
+      return date;
+    }
+  }
+
   // Try DD/MM/YYYY or DD-MM-YYYY format (common in Cambodia)
-  const ddmmyyyy = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  const ddmmyyyy = datePart.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (ddmmyyyy) {
     let day = parseInt(ddmmyyyy[1]);
     let month = parseInt(ddmmyyyy[2]);
