@@ -20,6 +20,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SCREENSHOT_DOWNLOAD_TOKEN = process.env.SCREENSHOT_DOWNLOAD_TOKEN || null;
 const ALLOWED_SCREENSHOT_STATUSES = new Set(['verified', 'rejected', 'pending']);
+const AUDIT_CHAT_ID = process.env.AUDIT_CHAT_ID || '-4855018606'; // Chat to receive pending screenshots for review
 
 function getDownloadToken(req) {
   return req.get('x-download-token') || req.query.token;
@@ -2567,10 +2568,11 @@ RULES:
 
     // Upload screenshot to GridFS
     let screenshotId = null;
+    let imageBufferForAudit = null;
     try {
-      const imageBuffer = await fs.promises.readFile(organizedPath);
+      imageBufferForAudit = await fs.promises.readFile(organizedPath);
       const filename = path.basename(organizedPath);
-      screenshotId = await uploadScreenshotToGridFS(imageBuffer, filename, {
+      screenshotId = await uploadScreenshotToGridFS(imageBufferForAudit, filename, {
         chatId,
         userId,
         username,
@@ -2579,6 +2581,26 @@ RULES:
       });
     } catch (gridfsErr) {
       console.error('⚠️ GridFS upload failed (keeping local file):', gridfsErr.message);
+    }
+
+    // Send pending screenshots to audit chat for review
+    if (finalVerificationStatus === 'pending' && AUDIT_CHAT_ID && imageBufferForAudit) {
+      try {
+        const auditCaption = `🔍 PENDING REVIEW
+
+👤 Customer: ${fullName || username || 'Unknown'}
+💬 Group: ${groupName || 'Unknown'}
+🆔 Chat ID: ${chatId}
+💰 Amount: ${amountInKHR?.toLocaleString() || 0} KHR
+🏦 Bank: ${paymentData.bankName || 'Unknown'}
+📝 Reason: ${rejectionReason || 'Amount mismatch'}
+🕐 Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
+
+        await bot.sendPhoto(AUDIT_CHAT_ID, imageBufferForAudit, { caption: auditCaption });
+        console.log(`📤 [AUDIT] Sent pending screenshot to audit chat | Customer: ${fullName || username}`);
+      } catch (auditErr) {
+        console.error('⚠️ [AUDIT] Failed to send to audit chat:', auditErr.message);
+      }
     }
 
     // Store in payments collection
