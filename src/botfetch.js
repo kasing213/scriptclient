@@ -2586,16 +2586,24 @@ RULES:
     // Send pending screenshots to audit chat for review
     if (finalVerificationStatus === 'pending' && AUDIT_CHAT_ID && imageBufferForAudit) {
       try {
+        // Get customer's current total paid
+        const customer = await customersCollection.findOne({ chatId: chatId });
+        const totalPaid = customer?.totalPaid || 0;
+        const remaining = expectedAmountKHR ? expectedAmountKHR - totalPaid : null;
+
         const auditCaption = `🔍 PENDING REVIEW
 
-👤 Customer: ${fullName || username || 'Unknown'}
-💬 Group: ${groupName || 'Unknown'}
-🆔 Chat ID: ${chatId}
-💰 Received: ${amountInKHR?.toLocaleString() || 0} KHR
-💵 Expected: ${expectedAmountKHR?.toLocaleString() || 'N/A'} KHR
-🏦 Bank: ${paymentData.bankName || 'Unknown'}
-📝 Reason: ${rejectionReason || 'Amount mismatch'}
-🕐 Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
+ Customer: ${fullName || username || 'Unknown'}
+ Group: ${groupName || 'Unknown'}
+ Chat ID: ${chatId}
+ This Payment: ${amountInKHR?.toLocaleString() || 0} KHR
+ Total Expected: ${expectedAmountKHR?.toLocaleString() || 'N/A'} KHR
+ Already Paid: ${totalPaid.toLocaleString()} KHR
+ Remaining: ${remaining !== null ? remaining.toLocaleString() : 'N/A'} KHR
+
+ Bank: ${paymentData.bankName || 'Unknown'}
+ Reason: ${rejectionReason || 'Amount mismatch'}
+ Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
 
         await bot.sendPhoto(AUDIT_CHAT_ID, imageBufferForAudit, { caption: auditCaption });
         console.log(`📤 [AUDIT] Sent pending screenshot to audit chat | Customer: ${fullName || username}`);
@@ -2670,10 +2678,10 @@ RULES:
   }
 }
 
-// ==== Audit Commands (Only in Audit Chat) ====
-// /verify chatid - Approve pending payment as partial pay
-// /reject chatid - Reject bad screenshot
-bot.onText(/\/verify\s+(-?\d+)/, async (msg, match) => {
+// ==== Audit Commands Setup (called after bot initialization) ====
+function setupAuditCommands() {
+  // /verify chatid - Approve pending payment as partial pay
+  bot.onText(/\/verify\s+(-?\d+)/, async (msg, match) => {
   const fromChatId = msg.chat.id.toString();
   const targetChatId = match[1];
 
@@ -2796,7 +2804,8 @@ bot.onText(/\/reject\s+(-?\d+)/, async (msg, match) => {
     console.error('❌ [REJECT] Error:', error.message);
     await bot.sendMessage(AUDIT_CHAT_ID, `❌ Error rejecting payment: ${error.message}`);
   }
-});
+  });
+}
 
 // ==== Queue System (Rate Limited) ====
 const messageQueue = [];
@@ -2927,6 +2936,7 @@ async function main() {
     await initializeBot();
     await startDB();
     await setupMessageHandler();
+    setupAuditCommands();
 
     console.log('🎯 Bot is ready and listening for messages...');
     console.log(`📡 Using connection strategy: ${connectionStrategies[currentStrategy].name}`);
