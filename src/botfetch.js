@@ -2605,7 +2605,10 @@ RULES:
  Reason: ${rejectionReason || 'Amount mismatch'}
  Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
 
-        await bot.sendPhoto(AUDIT_CHAT_ID, imageBufferForAudit, { caption: auditCaption });
+        await bot.sendPhoto(AUDIT_CHAT_ID, imageBufferForAudit, {
+          caption: auditCaption,
+          filename: `pending_${chatId}_${Date.now()}.jpg`
+        });
         console.log(`📤 [AUDIT] Sent pending screenshot to audit chat | Customer: ${fullName || username}`);
       } catch (auditErr) {
         console.error('⚠️ [AUDIT] Failed to send to audit chat:', auditErr.message);
