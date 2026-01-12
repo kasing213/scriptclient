@@ -2591,7 +2591,8 @@ RULES:
 👤 Customer: ${fullName || username || 'Unknown'}
 💬 Group: ${groupName || 'Unknown'}
 🆔 Chat ID: ${chatId}
-💰 Amount: ${amountInKHR?.toLocaleString() || 0} KHR
+💰 Received: ${amountInKHR?.toLocaleString() || 0} KHR
+💵 Expected: ${expectedAmountKHR?.toLocaleString() || 'N/A'} KHR
 🏦 Bank: ${paymentData.bankName || 'Unknown'}
 📝 Reason: ${rejectionReason || 'Amount mismatch'}
 🕐 Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
