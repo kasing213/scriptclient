@@ -2670,6 +2670,134 @@ RULES:
   }
 }
 
+// ==== Audit Commands (Only in Audit Chat) ====
+// /verify chatid - Approve pending payment as partial pay
+// /reject chatid - Reject bad screenshot
+bot.onText(/\/verify\s+(-?\d+)/, async (msg, match) => {
+  const fromChatId = msg.chat.id.toString();
+  const targetChatId = match[1];
+
+  // Only allow command from audit chat
+  if (fromChatId !== AUDIT_CHAT_ID) {
+    console.log(`⚠️ [VERIFY] Unauthorized: Command from ${fromChatId}, expected ${AUDIT_CHAT_ID}`);
+    return;
+  }
+
+  try {
+    // Find most recent pending payment for this chat
+    const pendingPayment = await paymentsCollection.findOne(
+      { chatId: targetChatId, paymentLabel: 'PENDING' },
+      { sort: { uploadedAt: -1 } }
+    );
+
+    if (!pendingPayment) {
+      await bot.sendMessage(AUDIT_CHAT_ID, `❌ No pending payment found for chat ID: ${targetChatId}`);
+      return;
+    }
+
+    // Update payment to PAID (partial payment approved)
+    await paymentsCollection.updateOne(
+      { _id: pendingPayment._id },
+      {
+        $set: {
+          paymentLabel: 'PAID',
+          verificationStatus: 'verified',
+          verificationNotes: `${pendingPayment.verificationNotes || ''} | Manually approved as partial payment by auditor`,
+          approvedAt: new Date(),
+          approvedBy: msg.from.username || msg.from.id
+        }
+      }
+    );
+
+    // Update customer total
+    await customersCollection.updateOne(
+      { chatId: targetChatId },
+      {
+        $inc: { totalPaid: pendingPayment.amountInKHR || 0 },
+        $set: { lastUpdated: new Date() }
+      }
+    );
+
+    // Send confirmation to audit chat
+    await bot.sendMessage(AUDIT_CHAT_ID,
+      `✅ APPROVED as partial payment\n\n` +
+      `👤 Customer: ${pendingPayment.fullName || pendingPayment.username}\n` +
+      `💰 Amount: ${pendingPayment.amountInKHR?.toLocaleString()} KHR\n` +
+      `🏦 Bank: ${pendingPayment.bankName}\n` +
+      `🆔 Payment ID: ${pendingPayment._id}`
+    );
+
+    // Notify customer
+    await bot.sendMessage(targetChatId,
+      `✅ ការទូទាត់របស់អ្នកត្រូវបានអនុម័ត!\nYour payment has been approved!\n\n` +
+      `💰 Amount: ${pendingPayment.amountInKHR?.toLocaleString()} KHR`
+    );
+
+    console.log(`✅ [VERIFY] Approved pending payment for chat ${targetChatId} | Amount: ${pendingPayment.amountInKHR} KHR`);
+  } catch (error) {
+    console.error('❌ [VERIFY] Error:', error.message);
+    await bot.sendMessage(AUDIT_CHAT_ID, `❌ Error approving payment: ${error.message}`);
+  }
+});
+
+bot.onText(/\/reject\s+(-?\d+)/, async (msg, match) => {
+  const fromChatId = msg.chat.id.toString();
+  const targetChatId = match[1];
+
+  // Only allow command from audit chat
+  if (fromChatId !== AUDIT_CHAT_ID) {
+    console.log(`⚠️ [REJECT] Unauthorized: Command from ${fromChatId}, expected ${AUDIT_CHAT_ID}`);
+    return;
+  }
+
+  try {
+    // Find most recent pending payment for this chat
+    const pendingPayment = await paymentsCollection.findOne(
+      { chatId: targetChatId, paymentLabel: 'PENDING' },
+      { sort: { uploadedAt: -1 } }
+    );
+
+    if (!pendingPayment) {
+      await bot.sendMessage(AUDIT_CHAT_ID, `❌ No pending payment found for chat ID: ${targetChatId}`);
+      return;
+    }
+
+    // Update payment to UNPAID (rejected)
+    await paymentsCollection.updateOne(
+      { _id: pendingPayment._id },
+      {
+        $set: {
+          paymentLabel: 'UNPAID',
+          verificationStatus: 'rejected',
+          verificationNotes: `${pendingPayment.verificationNotes || ''} | Manually rejected by auditor - bad screenshot`,
+          rejectedAt: new Date(),
+          rejectedBy: msg.from.username || msg.from.id
+        }
+      }
+    );
+
+    // Send confirmation to audit chat
+    await bot.sendMessage(AUDIT_CHAT_ID,
+      `❌ REJECTED\n\n` +
+      `👤 Customer: ${pendingPayment.fullName || pendingPayment.username}\n` +
+      `💰 Amount: ${pendingPayment.amountInKHR?.toLocaleString()} KHR\n` +
+      `🏦 Bank: ${pendingPayment.bankName}\n` +
+      `🆔 Payment ID: ${pendingPayment._id}`
+    );
+
+    // Notify customer
+    await bot.sendMessage(targetChatId,
+      `❌ ការទូទាត់របស់អ្នកត្រូវបានបដិសេធ។\nYour payment was rejected.\n\n` +
+      `សូមផ្ញើរូបថតថ្មីម្តងទៀត។\nPlease submit a new screenshot.`
+    );
+
+    console.log(`❌ [REJECT] Rejected pending payment for chat ${targetChatId} | Reason: Bad screenshot`);
+  } catch (error) {
+    console.error('❌ [REJECT] Error:', error.message);
+    await bot.sendMessage(AUDIT_CHAT_ID, `❌ Error rejecting payment: ${error.message}`);
+  }
+});
+
 // ==== Queue System (Rate Limited) ====
 const messageQueue = [];
 let processing = false;
