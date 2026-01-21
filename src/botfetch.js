@@ -12,6 +12,7 @@ const path = require('path');
 const XLSX = require('xlsx');
 const archiver = require('archiver');
 const express = require('express');
+const { extractWithBankFormat, getBankFormatStats } = require('./bankFormatRecognizer');
 process.on('unhandledRejection', (r)=>{console.error('UNHANDLED', r?.message, r?.stack)});
 process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.stack)});
 
@@ -58,6 +59,7 @@ app.get('/status', async (req, res) => {
         messageQueue: messageQueue.length,
         processing: processing
       },
+      bankFormat: getBankFormatStats(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
       timestamp: new Date().toISOString()
@@ -2328,12 +2330,46 @@ RULES:
       verificationNotes = 'Cannot verify - missing expected amount or extracted amount';
     }
 
+    // ==== BANK FORMAT ENHANCEMENT ====
+    // Try to improve OCR extraction using bank-specific patterns
+    console.log(`📋 Original OCR: ${paymentData.recipientName} / ${paymentData.toAccount}`);
+
+    const bankFormatResult = extractWithBankFormat(aiResponse);
+
+    // Use bank format extraction if it has higher confidence
+    let toAccount = paymentData.toAccount || '';
+    let recipientName = paymentData.recipientName || '';
+
+    if (bankFormatResult.success && bankFormatResult.confidence > 0.7) {
+      // Use bank format results if they're more confident
+      if (bankFormatResult.recipientName && !recipientName) {
+        recipientName = bankFormatResult.recipientName;
+        console.log(`🏦 Bank format enhanced recipient: "${recipientName}" (${bankFormatResult.bank})`);
+      }
+
+      if (bankFormatResult.toAccount && !toAccount) {
+        toAccount = bankFormatResult.toAccount;
+        console.log(`🏦 Bank format enhanced account: "${toAccount}" (${bankFormatResult.bank})`);
+      }
+
+      // Store bank format metadata for analytics
+      paymentData.bankFormatEnhancement = {
+        detected: true,
+        bank: bankFormatResult.bank,
+        confidence: bankFormatResult.confidence,
+        method: 'bank_format'
+      };
+    } else {
+      paymentData.bankFormatEnhancement = {
+        detected: false,
+        reason: bankFormatResult.reason || 'low_confidence'
+      };
+    }
+
     // ==== SECURITY: Recipient Verification ====
     // Flexible matching for different bank formats:
     // - ABA KHQR: "CHAN K. & THOEURN T."
     // - ABA Transfer: "CHAN KASING AND THOEURN THEARY" + "086 228 226"
-    const toAccount = paymentData.toAccount || '';
-    const recipientName = paymentData.recipientName || '';
 
     // Combine and lowercase for matching
     const combinedText = (toAccount + ' ' + recipientName).toLowerCase();
