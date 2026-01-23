@@ -18,10 +18,18 @@ process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.s
 
 // ---- Express Health Server for Railway/Docker ----
 const app = express();
+app.use(express.json()); // Parse JSON bodies
 const PORT = process.env.PORT || 3000;
 const SCREENSHOT_DOWNLOAD_TOKEN = process.env.SCREENSHOT_DOWNLOAD_TOKEN || null;
 const ALLOWED_SCREENSHOT_STATUSES = new Set(['verified', 'rejected', 'pending']);
-const AUDIT_CHAT_ID = process.env.AUDIT_CHAT_ID || '-4855018606'; // Chat to receive pending screenshots for review
+
+// 3-Chatbox System Configuration
+const PENDING_CHAT_ID = process.env.PENDING_CHAT_ID || '-4855018606';  // Pending screenshots for manual review
+const VERIFIED_CHAT_ID = process.env.VERIFIED_CHAT_ID || '-4857515257'; // Verified bank statements notification
+const REJECTED_CHAT_ID = process.env.REJECTED_CHAT_ID || '-4944397913'; // Rejected bank statements notification
+
+// Legacy support
+const AUDIT_CHAT_ID = PENDING_CHAT_ID; // Backward compatibility
 
 function getDownloadToken(req) {
   return req.get('x-download-token') || req.query.token;
@@ -869,6 +877,451 @@ app.get('/export/screenshots', async (req, res) => {
   }
 });
 
+// ===== REJECTION AUDIT ENDPOINTS =====
+
+// Get rejection summary statistics
+app.get('/api/rejections/summary', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    // Build date filter
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+
+    const matchStage = {
+      verificationStatus: 'rejected',
+      ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+    };
+
+    // Aggregate rejection statistics
+    const stats = await paymentsCollection.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: '$rejectionReason',
+          count: { $sum: 1 },
+          totalAmount: { $sum: { $toDouble: '$amountInKHR' } },
+          avgConfidence: { $avg: { $cond: [
+            { $and: [
+              { $ne: ['$confidence', null] },
+              { $ne: ['$confidence', 'high'] },
+              { $ne: ['$confidence', 'medium'] },
+              { $ne: ['$confidence', 'low'] }
+            ]},
+            { $toDouble: '$confidence' },
+            0.5
+          ]}},
+          recentDate: { $max: '$createdAt' }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Get total counts
+    const totalRejected = await paymentsCollection.countDocuments(matchStage);
+    const totalPayments = await paymentsCollection.countDocuments({
+      ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+    });
+
+    // Calculate rejection rate
+    const rejectionRate = totalPayments > 0 ? ((totalRejected / totalPayments) * 100).toFixed(2) : 0;
+
+    res.json({
+      summary: {
+        totalRejected,
+        totalPayments,
+        rejectionRate: parseFloat(rejectionRate)
+      },
+      byReason: stats,
+      dateRange: { startDate, endDate }
+    });
+
+  } catch (error) {
+    console.error('Rejection summary error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get detailed rejection list with pagination
+app.get('/api/rejections/detailed', async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      reason,
+      customer,
+      startDate,
+      endDate,
+      sortBy = 'createdAt',
+      sortOrder = -1
+    } = req.query;
+
+    // Build filter
+    const filter = { verificationStatus: 'rejected' };
+
+    if (reason) filter.rejectionReason = reason;
+    if (customer) filter.chatId = parseInt(customer);
+
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    // Execute query with pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const rejections = await paymentsCollection
+      .find(filter)
+      .sort({ [sortBy]: parseInt(sortOrder) })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    const total = await paymentsCollection.countDocuments(filter);
+
+    // Add screenshot URLs if available
+    const enrichedRejections = rejections.map(rejection => ({
+      ...rejection,
+      screenshotUrl: rejection.screenshotId
+        ? `/screenshots/gridfs/${rejection.screenshotId}`
+        : null,
+      localScreenshotPath: rejection.localScreenshotPath || null
+    }));
+
+    res.json({
+      data: enrichedRejections,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('Detailed rejections error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get rejection history for specific customer
+app.get('/api/rejections/customer/:chatId', async (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+
+    const rejections = await paymentsCollection
+      .find({
+        chatId,
+        verificationStatus: 'rejected'
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Get rejection pattern analysis
+    const reasonCounts = {};
+    let totalRejected = 0;
+
+    rejections.forEach(rejection => {
+      const reason = rejection.rejectionReason || 'UNKNOWN';
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+      totalRejected++;
+    });
+
+    // Get customer's total payment attempts
+    const totalAttempts = await paymentsCollection.countDocuments({ chatId });
+    const rejectionRate = totalAttempts > 0 ? ((totalRejected / totalAttempts) * 100).toFixed(2) : 0;
+
+    // Check for suspicious patterns
+    const suspiciousPatterns = [];
+    if (reasonCounts.OLD_SCREENSHOT >= 2) {
+      suspiciousPatterns.push('Multiple old screenshots');
+    }
+    if (reasonCounts.DUPLICATE_TRANSACTION >= 2) {
+      suspiciousPatterns.push('Multiple duplicate attempts');
+    }
+    if (rejectionRate > 50) {
+      suspiciousPatterns.push('High rejection rate');
+    }
+
+    res.json({
+      chatId,
+      rejections,
+      analysis: {
+        totalRejected,
+        totalAttempts,
+        rejectionRate: parseFloat(rejectionRate),
+        reasonBreakdown: reasonCounts,
+        suspiciousPatterns
+      }
+    });
+
+  } catch (error) {
+    console.error('Customer rejection history error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual review endpoint for rejected payments
+app.post('/api/rejections/:paymentId/review', async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const { action, notes, reviewedBy } = req.body;
+
+    if (!['approve', 'confirm_rejection'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Use "approve" or "confirm_rejection"' });
+    }
+
+    const payment = await paymentsCollection.findOne({ _id: paymentId });
+
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (payment.verificationStatus !== 'rejected') {
+      return res.status(400).json({ error: 'Payment is not in rejected status' });
+    }
+
+    // Update payment with review
+    const updateData = {
+      reviewedAt: new Date(),
+      reviewedBy: reviewedBy || 'auditor',
+      reviewNotes: notes || '',
+      reviewAction: action
+    };
+
+    if (action === 'approve') {
+      // Override rejection and approve payment
+      updateData.verificationStatus = 'verified';
+      updateData.paymentLabel = 'PAID';
+      updateData.verificationNotes = `${payment.verificationNotes || ''} | MANUAL APPROVAL: ${notes || 'Approved by auditor'}`;
+
+      // Notify customer of approval
+      if (payment.chatId) {
+        try {
+          await bot.sendMessage(payment.chatId,
+            `✅ ការទូទាត់របស់អ្នកត្រូវបានអនុម័ត\nYour payment has been approved after manual review.\n\n` +
+            `💰 Amount: ${payment.amountInKHR?.toLocaleString()} KHR`
+          );
+        } catch (notifyErr) {
+          console.error('Failed to notify customer of approval:', notifyErr.message);
+        }
+      }
+    }
+
+    await paymentsCollection.updateOne(
+      { _id: paymentId },
+      { $set: updateData }
+    );
+
+    res.json({
+      success: true,
+      action,
+      paymentId,
+      updatedFields: updateData
+    });
+
+  } catch (error) {
+    console.error('Payment review error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Rejection analytics dashboard data
+app.get('/api/rejections/analytics', async (req, res) => {
+  try {
+    const { period = '7d' } = req.query;
+
+    // Calculate date range based on period
+    const now = new Date();
+    const periodMap = {
+      '1d': 1,
+      '7d': 7,
+      '30d': 30,
+      '90d': 90,
+      '1y': 365
+    };
+
+    const daysBack = periodMap[period] || 7;
+    const startDate = new Date(now.getTime() - (daysBack * 24 * 60 * 60 * 1000));
+
+    // Daily rejection trend
+    const dailyTrend = await paymentsCollection.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+          verificationStatus: 'rejected'
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' }
+          },
+          count: { $sum: 1 },
+          totalAmount: { $sum: { $toDouble: '$amountInKHR' } }
+        }
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
+      }
+    ]).toArray();
+
+    // Top rejected customers
+    const topRejectedCustomers = await paymentsCollection.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+          verificationStatus: 'rejected'
+        }
+      },
+      {
+        $group: {
+          _id: '$chatId',
+          count: { $sum: 1 },
+          reasons: { $addToSet: '$rejectionReason' },
+          totalAmount: { $sum: { $toDouble: '$amountInKHR' } },
+          lastRejection: { $max: '$createdAt' }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      },
+      {
+        $limit: 10
+      }
+    ]).toArray();
+
+    // Hourly pattern analysis
+    const hourlyPattern = await paymentsCollection.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+          verificationStatus: 'rejected'
+        }
+      },
+      {
+        $group: {
+          _id: { $hour: '$createdAt' },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { '_id': 1 }
+      }
+    ]).toArray();
+
+    // False positive rate (manual approvals after rejection)
+    const manualApprovals = await paymentsCollection.countDocuments({
+      createdAt: { $gte: startDate },
+      reviewAction: 'approve',
+      reviewedAt: { $exists: true }
+    });
+
+    const totalRejections = await paymentsCollection.countDocuments({
+      createdAt: { $gte: startDate },
+      verificationStatus: 'rejected'
+    });
+
+    const falsePositiveRate = totalRejections > 0 ?
+      ((manualApprovals / totalRejections) * 100).toFixed(2) : 0;
+
+    res.json({
+      period,
+      dateRange: { startDate, endDate: now },
+      dailyTrend,
+      topRejectedCustomers,
+      hourlyPattern,
+      metrics: {
+        totalRejections,
+        manualApprovals,
+        falsePositiveRate: parseFloat(falsePositiveRate)
+      }
+    });
+
+  } catch (error) {
+    console.error('Rejection analytics error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export rejections to Excel
+app.get('/api/rejections/export', async (req, res) => {
+  try {
+    const { startDate, endDate, reason, format = 'xlsx' } = req.query;
+
+    // Build filter
+    const filter = { verificationStatus: 'rejected' };
+
+    if (reason) filter.rejectionReason = reason;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate);
+    }
+
+    const rejections = await paymentsCollection
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Prepare data for export
+    const exportData = rejections.map(rejection => ({
+      'Payment ID': rejection._id.toString(),
+      'Customer Chat ID': rejection.chatId,
+      'Customer Name': rejection.fullName || rejection.username,
+      'Amount (KHR)': rejection.amountInKHR || 0,
+      'Rejection Reason': rejection.rejectionReason || 'UNKNOWN',
+      'Confidence': rejection.confidence || 'N/A',
+      'Bank Name': rejection.bankName || 'Unknown',
+      'Transaction Date': rejection.transactionDate ? new Date(rejection.transactionDate).toLocaleDateString() : 'N/A',
+      'Created At': new Date(rejection.createdAt).toLocaleString(),
+      'Rejected At': rejection.rejectedAt ? new Date(rejection.rejectedAt).toLocaleString() : 'N/A',
+      'Reviewed By': rejection.reviewedBy || 'N/A',
+      'Review Action': rejection.reviewAction || 'N/A',
+      'Review Notes': rejection.reviewNotes || '',
+      'Verification Notes': rejection.verificationNotes || '',
+      'Screenshot Available': rejection.screenshotId ? 'Yes' : 'No'
+    }));
+
+    if (format === 'json') {
+      res.json({
+        data: exportData,
+        meta: {
+          total: exportData.length,
+          exported: new Date().toISOString(),
+          filters: { startDate, endDate, reason }
+        }
+      });
+    } else {
+      // Excel export
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+
+      // Auto-size columns
+      const colWidths = Object.keys(exportData[0] || {}).map(key => ({
+        wch: Math.max(key.length, 15)
+      }));
+      worksheet['!cols'] = colWidths;
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Rejected Payments');
+
+      const filename = `rejected_payments_${new Date().toISOString().split('T')[0]}.xlsx`;
+      const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(buffer);
+    }
+
+  } catch (error) {
+    console.error('Rejection export error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start Express server
 app.listen(PORT, () => {
   console.log(`🌐 Health server running on port ${PORT}`);
@@ -881,6 +1334,13 @@ app.listen(PORT, () => {
   console.log(`🔍 Fraud stats: http://localhost:${PORT}/fraud/stats`);
   console.log(`📥 Export data: http://localhost:${PORT}/export/all`);
   console.log(`🖼️ Export screenshots: http://localhost:${PORT}/export/screenshots`);
+  console.log(`❌ Rejection audit endpoints:`);
+  console.log(`  📊 Summary: http://localhost:${PORT}/api/rejections/summary`);
+  console.log(`  📋 Detailed: http://localhost:${PORT}/api/rejections/detailed`);
+  console.log(`  👤 Customer: http://localhost:${PORT}/api/rejections/customer/:chatId`);
+  console.log(`  🔍 Analytics: http://localhost:${PORT}/api/rejections/analytics`);
+  console.log(`  📤 Export: http://localhost:${PORT}/api/rejections/export`);
+  console.log(`  ✏️ Review: POST http://localhost:${PORT}/api/rejections/:paymentId/review`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
@@ -2619,8 +3079,8 @@ RULES:
       console.error('⚠️ GridFS upload failed (keeping local file):', gridfsErr.message);
     }
 
-    // Send pending screenshots to audit chat for review
-    if (finalVerificationStatus === 'pending' && AUDIT_CHAT_ID && imageBufferForAudit) {
+    // Send pending screenshots to pending chat for review
+    if (finalVerificationStatus === 'pending' && PENDING_CHAT_ID && imageBufferForAudit) {
       try {
         // Get customer's current total paid
         const customer = await customersCollection.findOne({ chatId: chatId });
@@ -2641,11 +3101,11 @@ RULES:
  Reason: ${rejectionReason || 'Amount mismatch'}
  Time: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}`;
 
-        await bot.sendPhoto(AUDIT_CHAT_ID, imageBufferForAudit, {
+        await bot.sendPhoto(PENDING_CHAT_ID, imageBufferForAudit, {
           caption: auditCaption,
           filename: `pending_${chatId}_${Date.now()}.jpg`
         });
-        console.log(`📤 [AUDIT] Sent pending screenshot to audit chat | Customer: ${fullName || username}`);
+        console.log(`📤 [PENDING] Sent pending screenshot to pending chat | Customer: ${fullName || username}`);
       } catch (auditErr) {
         console.error('⚠️ [AUDIT] Failed to send to audit chat:', auditErr.message);
       }
@@ -2662,6 +3122,7 @@ RULES:
       screenshotPath: organizedPath,
       screenshotId: screenshotId,
       uploadedAt: new Date(),
+      createdAt: new Date(), // Ensure createdAt exists for date filtering
 
       // Payment Status Label
       paymentLabel: paymentLabel,
@@ -2690,7 +3151,42 @@ RULES:
       aiAnalysis: aiResponse,
       verificationStatus: finalVerificationStatus,
       rejectionReason: rejectionReason,
-      isBankStatement: paymentData.isBankStatement !== false
+      isBankStatement: paymentData.isBankStatement !== false,
+
+      // Enhanced audit fields for rejection tracking
+      ...(finalVerificationStatus === 'rejected' && {
+        rejectedAt: new Date(),
+        rejectedBy: 'auto_verification',
+        rejectionMetadata: {
+          confidenceScore: paymentData.confidence || 'low',
+          extractedData: {
+            amount: paymentData.amount,
+            bankName: paymentData.bankName,
+            transactionId: paymentData.transactionId,
+            toAccount: paymentData.toAccount,
+            recipientName: paymentData.recipientName
+          },
+          verificationChecks: {
+            recipientVerified: recipientVerified,
+            amountVerified: isVerified,
+            duplicateCheck: rejectionReason === 'DUPLICATE_TRANSACTION',
+            timestampCheck: rejectionReason === 'OLD_SCREENSHOT'
+          },
+          userAgent: msg.from ? {
+            id: msg.from.id,
+            username: msg.from.username,
+            firstName: msg.from.first_name,
+            lastName: msg.from.last_name
+          } : null
+        }
+      }),
+
+      // Enhanced audit fields for pending verification
+      ...(finalVerificationStatus === 'pending' && {
+        pendingAt: new Date(),
+        pendingReason: rejectionReason, // BLURRY or AMOUNT_MISMATCH
+        requiresManualReview: true
+      })
     };
 
     try {
@@ -2707,6 +3203,69 @@ RULES:
     } catch (dbError) {
       console.error('❌ Failed to save payment record to database:', dbError);
       throw dbError;
+    }
+
+    // ===== 3-CHATBOX NOTIFICATION SYSTEM =====
+    // Send notifications to appropriate chat groups based on verification status
+    // Only for actual bank statements (exclude NOT_BANK_STATEMENT)
+
+    const isBankStatement = paymentData.isBankStatement !== false;
+
+    try {
+      if (finalVerificationStatus === 'verified' && isBankStatement && VERIFIED_CHAT_ID) {
+        // Send verified notification to VERIFIED_CHAT_ID
+        const verifiedCaption = `✅ VERIFIED PAYMENT
+
+👤 Customer: ${fullName || username || 'Unknown'}
+💰 Amount: ${(amountInKHR || 0).toLocaleString()} KHR
+🏦 Bank: ${paymentData.bankName || 'Unknown'}
+📞 Chat ID: ${chatId}
+🆔 Transaction ID: ${paymentData.transactionId || 'N/A'}
+⏰ Verified: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}
+🔗 Group: ${groupName || 'Direct Message'}
+
+${verificationNotes || 'Payment successfully verified.'}`;
+
+        if (imageBufferForAudit) {
+          await bot.sendPhoto(VERIFIED_CHAT_ID, imageBufferForAudit, {
+            caption: verifiedCaption,
+            filename: `verified_${chatId}_${Date.now()}.jpg`
+          });
+        } else {
+          await bot.sendMessage(VERIFIED_CHAT_ID, verifiedCaption);
+        }
+        console.log(`✅ [VERIFIED] Notification sent to verified chat | Customer: ${fullName || username}`);
+      }
+
+      else if (finalVerificationStatus === 'rejected' && isBankStatement && REJECTED_CHAT_ID) {
+        // Send rejection notification to REJECTED_CHAT_ID (only for bank statements)
+        const rejectedCaption = `❌ REJECTED PAYMENT
+
+👤 Customer: ${fullName || username || 'Unknown'}
+💰 Amount: ${(amountInKHR || 0).toLocaleString()} KHR
+🏦 Bank: ${paymentData.bankName || 'Unknown'}
+📞 Chat ID: ${chatId}
+🚫 Rejection Reason: ${rejectionReason || 'Unknown'}
+🔍 Confidence: ${paymentData.confidence || 'N/A'}
+⏰ Rejected: ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Phnom_Penh' })}
+🔗 Group: ${groupName || 'Direct Message'}
+
+${verificationNotes || 'Payment failed verification checks.'}`;
+
+        if (imageBufferForAudit && rejectionReason !== 'NOT_BANK_STATEMENT') {
+          await bot.sendPhoto(REJECTED_CHAT_ID, imageBufferForAudit, {
+            caption: rejectedCaption,
+            filename: `rejected_${chatId}_${Date.now()}.jpg`
+          });
+        } else if (rejectionReason !== 'NOT_BANK_STATEMENT') {
+          await bot.sendMessage(REJECTED_CHAT_ID, rejectedCaption);
+        }
+        console.log(`❌ [REJECTED] Notification sent to rejected chat | Reason: ${rejectionReason} | Customer: ${fullName || username}`);
+      }
+
+    } catch (notificationError) {
+      console.error('⚠️ [3-CHATBOX] Failed to send notification:', notificationError.message);
+      // Don't throw - notification failure shouldn't break payment processing
     }
 
     return paymentRecord;
@@ -2809,7 +3368,7 @@ bot.onText(/\/reject\s+(-?\d+)/, async (msg, match) => {
       return;
     }
 
-    // Update payment to UNPAID (rejected)
+    // Update payment to UNPAID (rejected) with enhanced audit tracking
     await paymentsCollection.updateOne(
       { _id: pendingPayment._id },
       {
@@ -2818,7 +3377,21 @@ bot.onText(/\/reject\s+(-?\d+)/, async (msg, match) => {
           verificationStatus: 'rejected',
           verificationNotes: `${pendingPayment.verificationNotes || ''} | Manually rejected by auditor - bad screenshot`,
           rejectedAt: new Date(),
-          rejectedBy: msg.from.username || msg.from.id
+          rejectedBy: msg.from.username || msg.from.id,
+          rejectionReason: 'MANUAL_REJECTION',
+          // Enhanced audit tracking for manual rejections
+          reviewedAt: new Date(),
+          reviewedBy: msg.from.username || msg.from.id,
+          reviewNotes: 'Manual rejection via Telegram command - bad screenshot',
+          reviewAction: 'confirm_rejection',
+          rejectionMetadata: {
+            manualReview: true,
+            reviewerId: msg.from.id,
+            reviewerUsername: msg.from.username,
+            reviewerName: `${msg.from.first_name || ''} ${msg.from.last_name || ''}`.trim(),
+            originalReason: pendingPayment.rejectionReason || 'PENDING_REVIEW',
+            reviewTimestamp: new Date().toISOString()
+          }
         }
       }
     );
