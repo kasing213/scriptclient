@@ -1,19 +1,18 @@
-# Use official Node.js LTS (Long Term Support) image with Alpine for smaller size
-FROM node:20-alpine AS base
+# Use official Node.js LTS (Long Term Support) image with Debian slim
+FROM node:20-slim AS base
 
 # Install security updates and necessary packages
-RUN apk update && \
-    apk upgrade && \
-    apk add --no-cache \
-    dumb-init \
-    && rm -rf /var/cache/apk/*
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends dumb-init && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /usr/src/app
 
 # Create non-root user for security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+RUN groupadd -g 1001 nodejs && \
+    useradd -u 1001 -g nodejs -s /bin/bash -m nodejs
 
 # Copy package files
 COPY --chown=nodejs:nodejs package*.json ./
