@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-01-23T08:25:18.047Z",
+  "bankFormatSamples": 0,
+  "nameValidationSamples": 613,
+  "syntheticSamples": 250,
+  "bankTypes": [
+    "ABA",
+    "ACLEDA",
+    "Wing",
+    "KHQR",
+    "Canadia"
+  ],
+  "knownRecipient": {
+    "account": "086228226",
+    "accountVariations": [
+      "086228226",
+      "086 228 226",
+      "086-228-226"
+    ],
+    "names": {
+      "initials": [
+        "CHAN K.",
+        "THOEURN T.",
+        "K. CHAN",
+        "T. THOEURN"
+      ],
+      "combined": [
+        "CHAN K. & THOEURN T.",
+        "K. CHAN & T. THOEURN"
+      ],
+      "fullNames": [
+        "CHAN KASING",
+        "THOEURN THEARY"
+      ],
+      "fullCombined": [
+        "CHAN KASING AND THOEURN THEARY",
+        "KASING CHAN AND THEARY THOEURN"
+      ]
+    }
+  }
+}

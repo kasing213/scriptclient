@@ -13,6 +13,7 @@ const XLSX = require('xlsx');
 const archiver = require('archiver');
 const express = require('express');
 const { extractWithBankFormat, getBankFormatStats } = require('./bankFormatRecognizer');
+const { extractWithEnhancedBankFormat, getEnhancedBankFormatStats } = require('./ml/enhancedBankFormatRecognizer');
 process.on('unhandledRejection', (r)=>{console.error('UNHANDLED', r?.message, r?.stack)});
 process.on('uncaughtException', (e)=>{console.error('UNCAUGHT', e?.message, e?.stack)});
 
@@ -68,6 +69,7 @@ app.get('/status', async (req, res) => {
         processing: processing
       },
       bankFormat: getBankFormatStats(),
+      enhancedBankFormat: getEnhancedBankFormatStats(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
       timestamp: new Date().toISOString()
@@ -1341,6 +1343,10 @@ app.listen(PORT, () => {
   console.log(`  🔍 Analytics: http://localhost:${PORT}/api/rejections/analytics`);
   console.log(`  📤 Export: http://localhost:${PORT}/api/rejections/export`);
   console.log(`  ✏️ Review: POST http://localhost:${PORT}/api/rejections/:paymentId/review`);
+  console.log(`📱 3-Chatbox System:`);
+  console.log(`  ⏳ Pending: ${PENDING_CHAT_ID} (manual review required)`);
+  console.log(`  ✅ Verified: ${VERIFIED_CHAT_ID} (successful payments)`);
+  console.log(`  ❌ Rejected: ${REJECTED_CHAT_ID} (failed bank statements)`);
 });
 
 // ---- WSL-safe FS helpers (expects fs-safe.js). If you don't have it yet,
@@ -2791,66 +2797,157 @@ RULES:
     }
 
     // ==== BANK FORMAT ENHANCEMENT ====
-    // Try to improve OCR extraction using bank-specific patterns
+    // Try enhanced ML bank format extraction
     console.log(`📋 Original OCR: ${paymentData.recipientName} / ${paymentData.toAccount}`);
 
-    const bankFormatResult = extractWithBankFormat(aiResponse);
-
-    // Use bank format extraction if it has higher confidence
+    let enhancedResult = null;
     let toAccount = paymentData.toAccount || '';
     let recipientName = paymentData.recipientName || '';
 
-    if (bankFormatResult.success && bankFormatResult.confidence > 0.7) {
-      // Use bank format results if they're more confident
-      if (bankFormatResult.recipientName && !recipientName) {
-        recipientName = bankFormatResult.recipientName;
-        console.log(`🏦 Bank format enhanced recipient: "${recipientName}" (${bankFormatResult.bank})`);
-      }
+    try {
+      enhancedResult = await extractWithEnhancedBankFormat(aiResponse);
+      console.log(`🤖 Enhanced ML result:`, {
+        bank: enhancedResult.bank,
+        success: enhancedResult.success,
+        confidence: enhancedResult.confidence.toFixed(3),
+        method: enhancedResult.method
+      });
 
-      if (bankFormatResult.toAccount && !toAccount) {
-        toAccount = bankFormatResult.toAccount;
-        console.log(`🏦 Bank format enhanced account: "${toAccount}" (${bankFormatResult.bank})`);
-      }
+      // Use enhanced results if they're confident
+      if (enhancedResult.success && enhancedResult.confidence > 0.4) {
+        if (enhancedResult.recipientName && !recipientName) {
+          recipientName = enhancedResult.recipientName;
+          console.log(`🤖 Enhanced ML recipient: "${recipientName}" (${enhancedResult.bank})`);
+        }
 
-      // Store bank format metadata for analytics
-      paymentData.bankFormatEnhancement = {
-        detected: true,
-        bank: bankFormatResult.bank,
-        confidence: bankFormatResult.confidence,
-        method: 'bank_format'
-      };
-    } else {
-      paymentData.bankFormatEnhancement = {
-        detected: false,
-        reason: bankFormatResult.reason || 'low_confidence'
-      };
+        if (enhancedResult.toAccount && !toAccount) {
+          toAccount = enhancedResult.toAccount;
+          console.log(`🤖 Enhanced ML account: "${toAccount}" (${enhancedResult.bank})`);
+        }
+
+        // Store enhanced metadata
+        paymentData.bankFormatEnhancement = {
+          detected: true,
+          bank: enhancedResult.bank,
+          confidence: enhancedResult.confidence,
+          method: enhancedResult.method,
+          mlEnhancement: enhancedResult.mlEnhancement
+        };
+      } else {
+        paymentData.bankFormatEnhancement = {
+          detected: false,
+          reason: enhancedResult.reason || 'low_confidence',
+          method: enhancedResult.method
+        };
+      }
+    } catch (error) {
+      console.warn(`⚠️ Enhanced ML extraction failed, using fallback: ${error.message}`);
+
+      // Fallback to traditional bank format extraction
+      const bankFormatResult = extractWithBankFormat(aiResponse);
+
+      if (bankFormatResult.success && bankFormatResult.confidence > 0.7) {
+        if (bankFormatResult.recipientName && !recipientName) {
+          recipientName = bankFormatResult.recipientName;
+        }
+        if (bankFormatResult.toAccount && !toAccount) {
+          toAccount = bankFormatResult.toAccount;
+        }
+
+        paymentData.bankFormatEnhancement = {
+          detected: true,
+          bank: bankFormatResult.bank,
+          confidence: bankFormatResult.confidence,
+          method: 'fallback_traditional'
+        };
+      } else {
+        paymentData.bankFormatEnhancement = {
+          detected: false,
+          reason: 'fallback_failed',
+          method: 'fallback_traditional'
+        };
+      }
     }
 
-    // ==== SECURITY: Recipient Verification ====
-    // Flexible matching for different bank formats:
-    // - ABA KHQR: "CHAN K. & THOEURN T."
-    // - ABA Transfer: "CHAN KASING AND THOEURN THEARY" + "086 228 226"
+    // ==== ENHANCED SECURITY: ML-Powered Recipient Verification ====
+    let recipientVerified = false;
+    let recipientVerificationDetails = null;
 
-    // Combine and lowercase for matching
-    const combinedText = (toAccount + ' ' + recipientName).toLowerCase();
-    const normalizedAccount = toAccount.replace(/\s/g, '').toLowerCase();
+    try {
+      // Try ML-enhanced recipient validation if available
+      if (enhancedResult?.mlEnhancement?.recipientValidation) {
+        const mlValidation = enhancedResult.mlEnhancement.recipientValidation;
+        recipientVerificationDetails = mlValidation;
 
-    // Check all possible formats
-    const recipientVerified = (
-      normalizedAccount.includes('086228226') ||     // account no spaces
-      combinedText.includes('086 228 226') ||        // account with spaces
-      combinedText.includes('chan k') ||             // "CHAN K." initials
-      combinedText.includes('thoeurn t') ||          // "THOEURN T." initials
-      combinedText.includes('chan kasing') ||        // full name
-      combinedText.includes('thoeurn theary')        // full name
-    );
+        if (mlValidation.finalResult) {
+          recipientVerified = mlValidation.finalResult.isValid;
+          const confidence = mlValidation.finalResult.confidence;
 
+          if (recipientVerified && confidence > 0.7) {
+            console.log(`✅ SECURITY: ML recipient verified | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName} | Confidence: ${confidence.toFixed(3)} | Method: ${mlValidation.finalResult.method}`);
+          } else if (recipientVerified && confidence > 0.4) {
+            console.log(`⚡ SECURITY: ML recipient verified (medium confidence) | Chat ${chatId} | Confidence: ${confidence.toFixed(3)}`);
+          } else {
+            console.log(`🚨 SECURITY: ML recipient validation failed | Chat ${chatId} | Confidence: ${confidence.toFixed(3)} | Method: ${mlValidation.finalResult.method}`);
+          }
+        }
+      }
+
+      // Fallback to rule-based validation if ML didn't run or has low confidence
+      if (!recipientVerified || (recipientVerificationDetails?.finalResult?.confidence || 0) < 0.6) {
+        console.log('📋 Using fallback rule-based recipient validation...');
+
+        // Traditional verification logic
+        const combinedText = (toAccount + ' ' + recipientName).toLowerCase();
+        const normalizedAccount = toAccount.replace(/\s/g, '').toLowerCase();
+
+        const ruleBasedVerified = (
+          normalizedAccount.includes('086228226') ||     // account no spaces
+          combinedText.includes('086 228 226') ||        // account with spaces
+          combinedText.includes('chan k') ||             // "CHAN K." initials
+          combinedText.includes('thoeurn t') ||          // "THOEURN T." initials
+          combinedText.includes('chan kasing') ||        // full name
+          combinedText.includes('thoeurn theary')        // full name
+        );
+
+        // Use rule-based result if ML confidence is low
+        if (!recipientVerified || (recipientVerificationDetails?.finalResult?.confidence || 0) < 0.4) {
+          recipientVerified = ruleBasedVerified;
+          console.log(`📝 Rule-based verification: ${ruleBasedVerified} | Chat ${chatId}`);
+        }
+      }
+
+    } catch (error) {
+      console.warn(`⚠️ ML recipient validation error: ${error.message}`);
+
+      // Fallback to traditional verification
+      const combinedText = (toAccount + ' ' + recipientName).toLowerCase();
+      const normalizedAccount = toAccount.replace(/\s/g, '').toLowerCase();
+
+      recipientVerified = (
+        normalizedAccount.includes('086228226') ||
+        combinedText.includes('086 228 226') ||
+        combinedText.includes('chan k') ||
+        combinedText.includes('thoeurn t') ||
+        combinedText.includes('chan kasing') ||
+        combinedText.includes('thoeurn theary')
+      );
+
+      console.log(`📝 Fallback verification: ${recipientVerified} | Chat ${chatId}`);
+    }
+
+    // Log final verification result
     if (recipientVerified) {
-      console.log(`✅ SECURITY: Recipient verified | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName}`);
+      console.log(`✅ SECURITY: Final recipient verification PASSED | Chat ${chatId} | Account: ${toAccount} | Name: ${recipientName}`);
     } else if (!toAccount && !recipientName) {
       console.log(`⚠️ SECURITY: No recipient info found | Chat ${chatId}`);
     } else {
-      console.log(`🚨 SECURITY: Recipient mismatch | Chat ${chatId} | Got: ${toAccount} / ${recipientName}`);
+      console.log(`🚨 SECURITY: Final recipient verification FAILED | Chat ${chatId} | Got: ${toAccount} / ${recipientName}`);
+    }
+
+    // Store recipient verification details for analytics
+    if (recipientVerificationDetails) {
+      paymentData.mlRecipientValidation = recipientVerificationDetails;
     }
 
     // ==== 3-STAGE VERIFICATION PIPELINE ====

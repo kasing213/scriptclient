@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@tensorflow/tfjs-node": "^4.15.0",
     "archiver": "^7.0.1",
     "axios": "^1.10.0",
     "body-parser": "^2.2.0",
@@ -21,6 +22,9 @@
     "export:payments": "node src/export-data.js payments",
     "export:customers": "node src/export-data.js customers",
     "export:fraud": "node src/export-data.js fraudAlerts",
-    "export:invoices": "node src/export-data.js excelreadings"
+    "export:invoices": "node src/export-data.js excelreadings",
+    "ml:train": "node scripts/train-ml-models.js",
+    "ml:test": "node scripts/test-ml-models.js",
+    "ml:collect-data": "node scripts/collect-training-data.js"
   }
 }
